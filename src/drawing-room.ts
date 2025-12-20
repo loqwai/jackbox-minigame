@@ -81,20 +81,20 @@ export class DrawingRoom extends DurableObject {
         return
       }
 
-      // Stroke message - store and broadcast
+      // Stroke message - store and broadcast to others
       if (data.type === "stroke") {
         const stroke: Stroke = { points: data.points, color: data.color, size: data.size }
         this.strokes.push(stroke)
         this.ctx.storage.put("strokes", this.strokes)
-        this.broadcast({ type: "stroke", ...stroke })
+        this.broadcast({ type: "stroke", ...stroke }, senderPeerId)
         return
       }
 
-      // Clear message - clear storage and broadcast
+      // Clear message - clear storage and broadcast to others
       if (data.type === "clear") {
         this.strokes = []
         this.ctx.storage.delete("strokes")
-        this.broadcast({ type: "clear" })
+        this.broadcast({ type: "clear" }, senderPeerId)
         return
       }
     } catch {}
