@@ -292,6 +292,39 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         }
       }, [])
 
+      // Store view in ref for render function
+      const viewRef = useRef(view)
+      useEffect(() => { viewRef.current = view }, [view])
+
+      // Render all strokes with current transform
+      const renderCanvas = useCallback(() => {
+        const ctx = ctxRef.current
+        const canvas = canvasRef.current
+        const v = viewRef.current
+        if (!ctx || !canvas) return
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.save()
+        ctx.translate(v.panX, v.panY)
+        ctx.scale(v.zoom, v.zoom)
+
+        allStrokes.current.forEach(s => {
+          if (s.points.length < 2) return
+          ctx.strokeStyle = s.color
+          ctx.lineWidth = s.size
+          ctx.lineCap = 'round'
+          ctx.lineJoin = 'round'
+          ctx.beginPath()
+          ctx.moveTo(s.points[0].x, s.points[0].y)
+          for (let i = 1; i < s.points.length; i++) {
+            ctx.lineTo(s.points[i].x, s.points[i].y)
+          }
+          ctx.stroke()
+        })
+
+        ctx.restore()
+      }, [])
+
       // Initialize canvas to fill container
       useEffect(() => {
         const canvas = canvasRef.current
@@ -313,35 +346,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         resize()
         window.addEventListener('resize', resize)
         return () => window.removeEventListener('resize', resize)
-      }, [])
-
-      // Render all strokes with current transform
-      const renderCanvas = useCallback(() => {
-        const ctx = ctxRef.current
-        const canvas = canvasRef.current
-        if (!ctx || !canvas) return
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-        ctx.save()
-        ctx.translate(view.panX, view.panY)
-        ctx.scale(view.zoom, view.zoom)
-
-        allStrokes.current.forEach(s => {
-          if (s.points.length < 2) return
-          ctx.strokeStyle = s.color
-          ctx.lineWidth = s.size
-          ctx.lineCap = 'round'
-          ctx.lineJoin = 'round'
-          ctx.beginPath()
-          ctx.moveTo(s.points[0].x, s.points[0].y)
-          for (let i = 1; i < s.points.length; i++) {
-            ctx.lineTo(s.points[i].x, s.points[i].y)
-          }
-          ctx.stroke()
-        })
-
-        ctx.restore()
-      }, [view])
+      }, [renderCanvas])
 
       // Re-render when view changes
       useEffect(() => {
@@ -351,10 +356,11 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       // Draw stroke in world coordinates (applies current transform)
       const drawStrokeWorld = useCallback((points, color, size) => {
         const ctx = ctxRef.current
+        const v = viewRef.current
         if (!ctx || points.length < 2) return
         ctx.save()
-        ctx.translate(view.panX, view.panY)
-        ctx.scale(view.zoom, view.zoom)
+        ctx.translate(v.panX, v.panY)
+        ctx.scale(v.zoom, v.zoom)
         ctx.strokeStyle = color
         ctx.lineWidth = size
         ctx.lineCap = 'round'
@@ -366,7 +372,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         }
         ctx.stroke()
         ctx.restore()
-      }, [view])
+      }, [])
 
       const clearCanvas = useCallback(() => {
         const ctx = ctxRef.current
@@ -432,13 +438,17 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         }
       }, [renderCanvas, clearCanvas])
 
+      // Store handleMessage in ref to avoid reconnection on change
+      const handleMessageRef = useRef(handleMessage)
+      useEffect(() => { handleMessageRef.current = handleMessage }, [handleMessage])
+
       // Wire up global callbacks for WebRTC
       useEffect(() => {
         onPeerCountChange = () => setPeerCount(dataChannels.size)
-        onMessage = handleMessage
-      }, [handleMessage])
+        onMessage = (data) => handleMessageRef.current(data)
+      }, [])
 
-      // WebSocket connection
+      // WebSocket connection (stable - only runs once)
       useEffect(() => {
         const connect = () => {
           if (!navigator.onLine) return
@@ -455,7 +465,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           ws.onerror = () => ws.close()
           ws.onmessage = (e) => {
             try {
-              handleMessage(JSON.parse(e.data))
+              handleMessageRef.current(JSON.parse(e.data))
             } catch {}
           }
         }
@@ -464,7 +474,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           if (ws) ws.close()
           peers.forEach((pc, id) => cleanupPeer(id))
         }
-      }, [handleMessage])
+      }, [])
 
       // Convert screen coordinates to world coordinates
       const screenToWorld = useCallback((screenX, screenY) => {
