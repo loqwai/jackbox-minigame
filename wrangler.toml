@@ -1,0 +1,15 @@
+name = "jackbox-drawing"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+routes = [
+  { pattern = "draw.hypnodroid.com", custom_domain = true }
+]
+
+[[durable_objects.bindings]]
+name = "DRAWING_ROOM"
+class_name = "DrawingRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["DrawingRoom"]

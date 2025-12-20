@@ -1,0 +1,47 @@
+import { DrawingRoom, Env } from "./drawing-room"
+import { drawHtml } from "./client/draw"
+import { presentHtml } from "./client/present"
+
+export { DrawingRoom }
+
+const generateRoomId = (): string => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+  let result = ""
+  for (let i = 0; i < 4; i++) result += chars.charAt(Math.floor(Math.random() * chars.length))
+  return result
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url)
+    const path = url.pathname
+
+    if (path === "/") return Response.redirect(`${url.origin}/room/${generateRoomId()}`, 302)
+
+    const roomMatch = path.match(/^\/room\/([A-Za-z0-9]+)(\/.*)?$/)
+    if (!roomMatch) return new Response("Not Found", { status: 404 })
+
+    const roomId = roomMatch[1].toUpperCase()
+    const subPath = roomMatch[2] || ""
+
+    if (subPath === "/ws") {
+      const id = env.DRAWING_ROOM.idFromName(roomId)
+      const stub = env.DRAWING_ROOM.get(id)
+      return stub.fetch(request)
+    }
+
+    if (subPath === "/present") {
+      return new Response(presentHtml(roomId), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      })
+    }
+
+    if (subPath === "" || subPath === "/") {
+      return new Response(drawHtml(roomId), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      })
+    }
+
+    return new Response("Not Found", { status: 404 })
+  },
+}
