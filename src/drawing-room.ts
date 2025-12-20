@@ -5,6 +5,14 @@ export interface Env {
 }
 
 type Point = { x: number; y: number }
+type Stroke = { points: Point[]; color: string; size: number }
+
+type SignalingMessage =
+  | { type: "join"; peerId: string }
+  | { type: "offer"; from: string; to: string; sdp: RTCSessionDescriptionInit }
+  | { type: "answer"; from: string; to: string; sdp: RTCSessionDescriptionInit }
+  | { type: "ice"; from: string; to: string; candidate: RTCIceCandidateInit }
+
 type DrawMessage =
   | { type: "stroke"; points: Point[]; color: string; size: number }
   | { type: "clear" }
@@ -12,18 +20,45 @@ type DrawMessage =
 type ServerMessage =
   | { type: "stroke"; points: Point[]; color: string; size: number }
   | { type: "clear" }
+  | { type: "sync"; strokes: Stroke[] }
   | { type: "userCount"; count: number }
+  | { type: "peers"; peerIds: string[] }
+  | { type: "peer-joined"; peerId: string }
+  | { type: "peer-left"; peerId: string }
+  | SignalingMessage
 
 export class DrawingRoom extends DurableObject {
+  private strokes: Stroke[] = []
+
   async fetch(request: Request): Promise<Response> {
     const upgradeHeader = request.headers.get("Upgrade")
     if (upgradeHeader !== "websocket") return new Response("Expected WebSocket", { status: 426 })
 
-    const [client, server] = Object.values(new WebSocketPair())
-    this.ctx.acceptWebSocket(server)
+    const url = new URL(request.url)
+    const peerId = url.searchParams.get("peerId") || Math.random().toString(36).substr(2, 9)
 
-    const count = this.ctx.getWebSockets().length
-    server.send(JSON.stringify({ type: "userCount", count } as ServerMessage))
+    // Load strokes from storage if not already loaded
+    if (this.strokes.length === 0) {
+      const stored = await this.ctx.storage.get<Stroke[]>("strokes")
+      if (stored) this.strokes = stored
+    }
+
+    const [client, server] = Object.values(new WebSocketPair())
+    this.ctx.acceptWebSocket(server, [peerId])
+
+    // Send existing drawing state to new peer
+    if (this.strokes.length > 0) {
+      server.send(JSON.stringify({ type: "sync", strokes: this.strokes }))
+    }
+
+    // Send existing peer list to new peer
+    const existingPeers = this.ctx.getWebSockets()
+      .map(s => this.ctx.getTags(s)[0])
+      .filter(id => id && id !== peerId)
+    server.send(JSON.stringify({ type: "peers", peerIds: existingPeers }))
+
+    // Notify existing peers about new peer
+    this.broadcast({ type: "peer-joined", peerId }, peerId)
     this.broadcastUserCount()
 
     return new Response(null, { status: 101, webSocket: client })
@@ -33,29 +68,64 @@ export class DrawingRoom extends DurableObject {
     if (typeof message !== "string") return
 
     try {
-      JSON.parse(message) as DrawMessage
-      const sockets = this.ctx.getWebSockets()
-      for (const socket of sockets) {
-        try { socket.send(message) } catch {}
+      const data = JSON.parse(message)
+      const senderPeerId = this.ctx.getTags(ws)[0]
+
+      // WebRTC signaling - relay to specific peer
+      if (data.type === "offer" || data.type === "answer" || data.type === "ice") {
+        const targetSocket = this.ctx.getWebSockets()
+          .find(s => this.ctx.getTags(s)[0] === data.to)
+        if (targetSocket) {
+          try { targetSocket.send(JSON.stringify({ ...data, from: senderPeerId })) } catch {}
+        }
+        return
+      }
+
+      // Stroke message - store and broadcast
+      if (data.type === "stroke") {
+        const stroke: Stroke = { points: data.points, color: data.color, size: data.size }
+        this.strokes.push(stroke)
+        this.ctx.storage.put("strokes", this.strokes)
+        this.broadcast({ type: "stroke", ...stroke })
+        return
+      }
+
+      // Clear message - clear storage and broadcast
+      if (data.type === "clear") {
+        this.strokes = []
+        this.ctx.storage.delete("strokes")
+        this.broadcast({ type: "clear" })
+        return
       }
     } catch {}
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    const peerId = this.ctx.getTags(ws)[0]
     ws.close(code, reason)
+    if (peerId) this.broadcast({ type: "peer-left", peerId }, peerId)
     this.broadcastUserCount()
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
+    const peerId = this.ctx.getTags(ws)[0]
     ws.close(1011, "WebSocket error")
+    if (peerId) this.broadcast({ type: "peer-left", peerId }, peerId)
     this.broadcastUserCount()
   }
 
-  private broadcastUserCount = (): void => {
+  private broadcast = (message: ServerMessage, excludePeerId?: string): void => {
+    const msg = JSON.stringify(message)
     const sockets = this.ctx.getWebSockets()
-    const message = JSON.stringify({ type: "userCount", count: sockets.length } as ServerMessage)
     for (const socket of sockets) {
-      try { socket.send(message) } catch {}
+      const peerId = this.ctx.getTags(socket)[0]
+      if (peerId === excludePeerId) continue
+      try { socket.send(msg) } catch {}
     }
+  }
+
+  private broadcastUserCount = (): void => {
+    const count = this.ctx.getWebSockets().length
+    this.broadcast({ type: "userCount", count })
   }
 }

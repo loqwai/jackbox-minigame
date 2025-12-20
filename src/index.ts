@@ -1,6 +1,8 @@
 import { DrawingRoom, Env } from "./drawing-room"
 import { drawHtml } from "./client/draw"
 import { presentHtml } from "./client/present"
+import { manifestJson } from "./client/manifest"
+import { serviceWorkerJs } from "./client/sw"
 
 export { DrawingRoom }
 
@@ -15,6 +17,18 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
     const path = url.pathname
+
+    if (path === "/manifest.json") {
+      return new Response(manifestJson, {
+        headers: { "Content-Type": "application/manifest+json" },
+      })
+    }
+
+    if (path === "/sw.js") {
+      return new Response(serviceWorkerJs, {
+        headers: { "Content-Type": "application/javascript" },
+      })
+    }
 
     if (path === "/") return Response.redirect(`${url.origin}/room/${generateRoomId()}`, 302)
 
