@@ -86,6 +86,60 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       padding: 12px 32px; border-radius: 8px; font-size: 14px; cursor: pointer
     }
     .host-btn { background: #2ecc71 }
+    .minimap {
+      position: absolute; bottom: 12px; left: 12px;
+      width: 140px; height: 140px;
+      background: rgba(22, 33, 62, 0.85);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 20
+    }
+    .minimap-inner {
+      position: relative; width: 100%; height: 100%
+    }
+    .minimap-viewport {
+      position: absolute;
+      border: 1.5px solid rgba(255, 255, 255, 0.5);
+      background: rgba(255, 255, 255, 0.1);
+      pointer-events: none
+    }
+    .minimap-cursor {
+      position: absolute; width: 8px; height: 8px;
+      border-radius: 50%; transform: translate(-50%, -50%);
+      border: 1.5px solid rgba(0, 0, 0, 0.5);
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.3)
+    }
+    .minimap-cursor.self {
+      width: 10px; height: 10px;
+      border: 2px solid #fff;
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.5)
+    }
+    .minimap-arrow {
+      position: absolute; width: 0; height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-bottom: 10px solid;
+      transform-origin: center bottom
+    }
+    .disabled-overlay {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(233, 69, 96, 0.9);
+      color: #fff; padding: 16px 32px;
+      border-radius: 12px; font-size: 18px;
+      font-weight: bold; z-index: 30;
+      text-align: center; pointer-events: none;
+      animation: pulse 0.5s ease-in-out infinite alternate
+    }
+    .disabled-timer {
+      font-size: 32px; display: block; margin-top: 8px
+    }
+    @keyframes pulse {
+      from { transform: translate(-50%, -50%) scale(1); }
+      to { transform: translate(-50%, -50%) scale(1.05); }
+    }
   </style>
 </head>
 <body>
@@ -112,6 +166,17 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     let myPeerId = Math.random().toString(36).substr(2, 9)
     let onPeerCountChange = () => {}
     let onMessage = (data) => {}
+    let onCursorUpdate = (peerId, cursor) => {}
+
+    // Assign colors to peers for visual distinction
+    const CURSOR_COLORS = ['#e94560', '#f39c12', '#2ecc71', '#3498db', '#9b59b6', '#1abc9c', '#e74c3c', '#00cec9']
+    const peerColors = new Map()  // peerId -> color
+    const getPeerColor = (peerId) => {
+      if (!peerColors.has(peerId)) {
+        peerColors.set(peerId, CURSOR_COLORS[peerColors.size % CURSOR_COLORS.length])
+      }
+      return peerColors.get(peerId)
+    }
 
     const RTC_CONFIG = {
       iceServers: [
@@ -198,6 +263,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
       if (data.type === 'peer-left') {
         cleanupPeer(data.peerId)
+        onCursorUpdate(data.peerId, null)  // Remove cursor
+        peerColors.delete(data.peerId)
         return true
       }
 
@@ -270,6 +337,15 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       const [showHost, setShowHost] = useState(false)
       const [localIp, setLocalIp] = useState(null)
       const [qrSvg, setQrSvg] = useState(null)
+      const [remoteCursors, setRemoteCursors] = useState(new Map())  // peerId -> {x, y}
+      const myCursor = useRef({ x: 0, y: 0 })  // My cursor in world coordinates
+      const [drawDisabled, setDrawDisabled] = useState(false)
+      const [disabledTimer, setDisabledTimer] = useState(0)
+      const enemies = useRef([])  // Array of {x, y, id} in world coordinates
+      const ENEMY_SIZE = 25  // Enemy radius in world units
+      const ENEMY_SPEED = 80  // Pixels per second in world units
+      const ENEMY_COUNT = 3  // Number of enemies
+      const DISABLE_DURATION = 5  // Seconds player can't draw
 
       const canvasRef = useRef(null)
       const containerRef = useRef(null)
@@ -308,6 +384,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         ctx.translate(v.panX, v.panY)
         ctx.scale(v.zoom, v.zoom)
 
+        // Draw all strokes
         allStrokes.current.forEach(s => {
           if (s.points.length < 2) return
           ctx.strokeStyle = s.color
@@ -320,6 +397,51 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             ctx.lineTo(s.points[i].x, s.points[i].y)
           }
           ctx.stroke()
+        })
+
+        // Draw enemies
+        enemies.current.forEach(enemy => {
+          // Enemy body (red circle with gradient)
+          const gradient = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, ENEMY_SIZE)
+          gradient.addColorStop(0, '#ff6b6b')
+          gradient.addColorStop(0.7, '#e94560')
+          gradient.addColorStop(1, '#c0392b')
+          ctx.fillStyle = gradient
+          ctx.beginPath()
+          ctx.arc(enemy.x, enemy.y, ENEMY_SIZE, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Enemy eyes (looking toward player)
+          const dx = myCursor.current.x - enemy.x
+          const dy = myCursor.current.y - enemy.y
+          const angle = Math.atan2(dy, dx)
+          const eyeOffset = 8
+          const eyeRadius = 5
+          const pupilRadius = 2.5
+
+          // Left eye
+          const leftEyeX = enemy.x + Math.cos(angle - 0.4) * eyeOffset
+          const leftEyeY = enemy.y + Math.sin(angle - 0.4) * eyeOffset
+          ctx.fillStyle = '#fff'
+          ctx.beginPath()
+          ctx.arc(leftEyeX, leftEyeY, eyeRadius, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = '#000'
+          ctx.beginPath()
+          ctx.arc(leftEyeX + Math.cos(angle) * 2, leftEyeY + Math.sin(angle) * 2, pupilRadius, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Right eye
+          const rightEyeX = enemy.x + Math.cos(angle + 0.4) * eyeOffset
+          const rightEyeY = enemy.y + Math.sin(angle + 0.4) * eyeOffset
+          ctx.fillStyle = '#fff'
+          ctx.beginPath()
+          ctx.arc(rightEyeX, rightEyeY, eyeRadius, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = '#000'
+          ctx.beginPath()
+          ctx.arc(rightEyeX + Math.cos(angle) * 2, rightEyeY + Math.sin(angle) * 2, pupilRadius, 0, Math.PI * 2)
+          ctx.fill()
         })
 
         ctx.restore()
@@ -352,6 +474,160 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       useEffect(() => {
         renderCanvas()
       }, [view, renderCanvas])
+
+      // Check if a point collides with any stroke (for enemy pathfinding)
+      const collidesWithStroke = useCallback((x, y, radius) => {
+        for (const stroke of allStrokes.current) {
+          if (stroke.color === '#ffffff') continue  // Skip eraser strokes
+          for (let i = 0; i < stroke.points.length - 1; i++) {
+            const p1 = stroke.points[i]
+            const p2 = stroke.points[i + 1]
+            // Point-to-line-segment distance
+            const dx = p2.x - p1.x
+            const dy = p2.y - p1.y
+            const len2 = dx * dx + dy * dy
+            let t = 0
+            if (len2 > 0) {
+              t = Math.max(0, Math.min(1, ((x - p1.x) * dx + (y - p1.y) * dy) / len2))
+            }
+            const nearX = p1.x + t * dx
+            const nearY = p1.y + t * dy
+            const dist = Math.hypot(x - nearX, y - nearY)
+            if (dist < radius + stroke.size / 2) return true
+          }
+        }
+        return false
+      }, [])
+
+      // Spawn enemies at random positions around the player
+      const spawnEnemies = useCallback(() => {
+        const newEnemies = []
+        for (let i = 0; i < ENEMY_COUNT; i++) {
+          const angle = Math.random() * Math.PI * 2
+          const distance = 400 + Math.random() * 300  // Spawn 400-700 units away
+          let x = myCursor.current.x + Math.cos(angle) * distance
+          let y = myCursor.current.y + Math.sin(angle) * distance
+          // Make sure spawn point isn't inside a stroke
+          let attempts = 0
+          while (collidesWithStroke(x, y, ENEMY_SIZE) && attempts < 10) {
+            const newAngle = Math.random() * Math.PI * 2
+            x = myCursor.current.x + Math.cos(newAngle) * distance
+            y = myCursor.current.y + Math.sin(newAngle) * distance
+            attempts++
+          }
+          newEnemies.push({ x, y, id: i })
+        }
+        enemies.current = newEnemies
+      }, [collidesWithStroke])
+
+      // Game loop - enemy movement and collision detection
+      useEffect(() => {
+        let lastTime = performance.now()
+        let animationId = null
+        let spawned = false
+
+        const gameLoop = (currentTime) => {
+          const deltaTime = (currentTime - lastTime) / 1000  // Convert to seconds
+          lastTime = currentTime
+
+          // Spawn enemies on first run
+          if (!spawned) {
+            spawnEnemies()
+            spawned = true
+          }
+
+          // Update each enemy
+          let playerHit = false
+          enemies.current = enemies.current.map(enemy => {
+            // Direction toward player
+            const dx = myCursor.current.x - enemy.x
+            const dy = myCursor.current.y - enemy.y
+            const dist = Math.hypot(dx, dy)
+
+            // Check if touching player (cursor)
+            if (dist < ENEMY_SIZE + 10) {  // 10 = cursor "hitbox"
+              playerHit = true
+            }
+
+            // Don't move if very close
+            if (dist < ENEMY_SIZE) {
+              return enemy
+            }
+
+            // Normalize direction
+            const dirX = dx / dist
+            const dirY = dy / dist
+
+            // Calculate new position
+            const moveSpeed = ENEMY_SPEED * deltaTime
+            let newX = enemy.x + dirX * moveSpeed
+            let newY = enemy.y + dirY * moveSpeed
+
+            // Check collision with strokes - try to slide along walls
+            if (collidesWithStroke(newX, newY, ENEMY_SIZE)) {
+              // Try moving only in X
+              if (!collidesWithStroke(newX, enemy.y, ENEMY_SIZE)) {
+                return { ...enemy, x: newX }
+              }
+              // Try moving only in Y
+              if (!collidesWithStroke(enemy.x, newY, ENEMY_SIZE)) {
+                return { ...enemy, y: newY }
+              }
+              // Can't move - stuck behind wall
+              return enemy
+            }
+
+            return { ...enemy, x: newX, y: newY }
+          })
+
+          // Disable drawing if player was hit
+          if (playerHit && !drawDisabled) {
+            setDrawDisabled(true)
+            setDisabledTimer(DISABLE_DURATION)
+
+            // Respawn the enemy that hit the player far away
+            enemies.current = enemies.current.map(enemy => {
+              const dx = myCursor.current.x - enemy.x
+              const dy = myCursor.current.y - enemy.y
+              if (Math.hypot(dx, dy) < ENEMY_SIZE + 15) {
+                const angle = Math.random() * Math.PI * 2
+                const distance = 500 + Math.random() * 300
+                return {
+                  ...enemy,
+                  x: myCursor.current.x + Math.cos(angle) * distance,
+                  y: myCursor.current.y + Math.sin(angle) * distance
+                }
+              }
+              return enemy
+            })
+          }
+
+          renderCanvas()
+          animationId = requestAnimationFrame(gameLoop)
+        }
+
+        animationId = requestAnimationFrame(gameLoop)
+        return () => {
+          if (animationId) cancelAnimationFrame(animationId)
+        }
+      }, [renderCanvas, spawnEnemies, collidesWithStroke, drawDisabled])
+
+      // Disabled timer countdown
+      useEffect(() => {
+        if (!drawDisabled) return
+
+        const interval = setInterval(() => {
+          setDisabledTimer(prev => {
+            if (prev <= 1) {
+              setDrawDisabled(false)
+              return 0
+            }
+            return prev - 1
+          })
+        }, 1000)
+
+        return () => clearInterval(interval)
+      }, [drawDisabled])
 
       // Draw stroke in world coordinates (applies current transform)
       const drawStrokeWorld = useCallback((points, color, size) => {
@@ -406,6 +682,22 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         })
       }, [])
 
+      // Throttled cursor broadcast (max 20 updates per second)
+      const lastCursorBroadcast = useRef(0)
+      const broadcastCursor = useCallback((worldX, worldY) => {
+        const now = Date.now()
+        if (now - lastCursorBroadcast.current < 50) return  // Throttle to 20fps
+        lastCursorBroadcast.current = now
+
+        myCursor.current = { x: worldX, y: worldY }
+        const msg = JSON.stringify({ type: 'cursor', x: worldX, y: worldY, from: myPeerId })
+        dataChannels.forEach((dc) => {
+          if (dc.readyState === 'open') {
+            try { dc.send(msg) } catch {}
+          }
+        })
+      }, [])
+
       // Handle incoming messages (from WS or WebRTC)
       const handleMessage = useCallback((data) => {
         // Handle signaling messages
@@ -436,6 +728,13 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           allStrokes.current = data.strokes || []
           renderCanvas()
         }
+        if (data.type === 'cursor' && data.from !== myPeerId) {
+          setRemoteCursors(prev => {
+            const next = new Map(prev)
+            next.set(data.from, { x: data.x, y: data.y })
+            return next
+          })
+        }
       }, [renderCanvas, clearCanvas])
 
       // Store handleMessage in ref to avoid reconnection on change
@@ -446,6 +745,17 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       useEffect(() => {
         onPeerCountChange = () => setPeerCount(dataChannels.size)
         onMessage = (data) => handleMessageRef.current(data)
+        onCursorUpdate = (peerId, cursor) => {
+          setRemoteCursors(prev => {
+            const next = new Map(prev)
+            if (cursor === null) {
+              next.delete(peerId)
+            } else {
+              next.set(peerId, cursor)
+            }
+            return next
+          })
+        }
       }, [])
 
       // WebSocket connection (stable - only runs once)
@@ -499,10 +809,15 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         e.preventDefault()
         e.target.setPointerCapture(e.pointerId)
 
+        // Update cursor position even when disabled
+        const startPoint = getWorldCoords(e)
+        myCursor.current = { x: startPoint.x, y: startPoint.y }
+        broadcastCursor(startPoint.x, startPoint.y)
+
         activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
         const pointers = getPointersArray()
 
-        // Two+ pointers = pan + zoom gesture
+        // Two+ pointers = pan + zoom gesture (always allowed)
         if (pointers.length >= 2) {
           isDrawing.current = false
           currentPoints.current = []
@@ -514,16 +829,23 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           return
         }
 
+        // Don't allow drawing if disabled
+        if (drawDisabled) return
+
         // Right-click = erase
         if (e.button === 2) setTempEraser(true)
 
         // Single pointer = draw
         isDrawing.current = true
-        currentPoints.current = [getWorldCoords(e)]
-      }, [getWorldCoords])
+        currentPoints.current = [startPoint]
+      }, [getWorldCoords, broadcastCursor, drawDisabled])
 
       const handlePointerMove = useCallback((e) => {
         e.preventDefault()
+
+        // Always broadcast cursor position for minimap (even if not in activePointers yet)
+        const point = getWorldCoords(e)
+        broadcastCursor(point.x, point.y)
 
         if (!activePointers.current.has(e.pointerId)) return
         activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
@@ -556,14 +878,13 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
         if (!isDrawing.current) return
 
-        const point = getWorldCoords(e)
         currentPoints.current.push(point)
         const erasing = isEraser || tempEraser
         const color = erasing ? '#ffffff' : currentColor
         if (currentPoints.current.length >= 2) {
           drawStrokeWorld(currentPoints.current.slice(-2), color, brushSize)
         }
-      }, [getWorldCoords, currentColor, brushSize, isEraser, tempEraser, drawStrokeWorld])
+      }, [getWorldCoords, broadcastCursor, currentColor, brushSize, isEraser, tempEraser, drawStrokeWorld])
 
       const handlePointerUp = useCallback((e) => {
         e.preventDefault()
@@ -677,6 +998,104 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         ? userCount + ' player' + (userCount !== 1 ? 's' : '')
         : 'Connecting...'
 
+      // Minimap configuration
+      const MINIMAP_SIZE = 140
+      const MINIMAP_WORLD_RADIUS = 2000  // World units shown in minimap radius
+      const MINIMAP_CENTER = MINIMAP_SIZE / 2
+
+      // Convert world coordinates to minimap coordinates
+      const worldToMinimap = (worldX, worldY) => {
+        const myX = myCursor.current.x
+        const myY = myCursor.current.y
+        const dx = worldX - myX
+        const dy = worldY - myY
+        const scale = MINIMAP_CENTER / MINIMAP_WORLD_RADIUS
+        return {
+          x: MINIMAP_CENTER + dx * scale,
+          y: MINIMAP_CENTER + dy * scale
+        }
+      }
+
+      // Check if point is within minimap bounds (with some margin for arrows)
+      const isInMinimapBounds = (mx, my, margin = 10) => {
+        return mx >= margin && mx <= MINIMAP_SIZE - margin &&
+               my >= margin && my <= MINIMAP_SIZE - margin
+      }
+
+      // Calculate arrow position and rotation for off-screen cursors
+      const getArrowIndicator = (worldX, worldY, color) => {
+        const myX = myCursor.current.x
+        const myY = myCursor.current.y
+        const dx = worldX - myX
+        const dy = worldY - myY
+        const angle = Math.atan2(dy, dx)
+
+        // Position arrow at edge of minimap
+        const edgeMargin = 14
+        const radius = MINIMAP_CENTER - edgeMargin
+        const arrowX = MINIMAP_CENTER + Math.cos(angle) * radius
+        const arrowY = MINIMAP_CENTER + Math.sin(angle) * radius
+
+        // Rotation: arrow points outward (add 90deg since CSS triangle points up)
+        const rotation = (angle * 180 / Math.PI) + 90
+
+        return { x: arrowX, y: arrowY, rotation, color }
+      }
+
+      // Build minimap cursor elements
+      const minimapElements = []
+
+      // Add self cursor (center)
+      minimapElements.push({
+        type: 'cursor',
+        x: MINIMAP_CENTER,
+        y: MINIMAP_CENTER,
+        color: '#fff',
+        isSelf: true
+      })
+
+      // Add remote cursors
+      remoteCursors.forEach((cursor, peerId) => {
+        const color = getPeerColor(peerId)
+        const pos = worldToMinimap(cursor.x, cursor.y)
+
+        if (isInMinimapBounds(pos.x, pos.y)) {
+          minimapElements.push({
+            type: 'cursor',
+            x: pos.x,
+            y: pos.y,
+            color,
+            isSelf: false
+          })
+        } else {
+          // Show arrow for off-screen player
+          const arrow = getArrowIndicator(cursor.x, cursor.y, color)
+          minimapElements.push({
+            type: 'arrow',
+            ...arrow
+          })
+        }
+      })
+
+      // Add enemies to minimap
+      enemies.current.forEach((enemy, i) => {
+        const pos = worldToMinimap(enemy.x, enemy.y)
+        if (isInMinimapBounds(pos.x, pos.y, 5)) {
+          minimapElements.push({
+            type: 'enemy',
+            x: pos.x,
+            y: pos.y
+          })
+        } else {
+          // Show arrow for off-screen enemy
+          const arrow = getArrowIndicator(enemy.x, enemy.y, '#e94560')
+          minimapElements.push({
+            type: 'enemy-arrow',
+            ...arrow
+          })
+        }
+      })
+
       return html\`
         <div class="app">
           <div class="header">
@@ -701,6 +1120,32 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
               onPointerLeave=\${handlePointerUp}
               onContextMenu=\${handleContextMenu}
             />
+            <div class="minimap">
+              <div class="minimap-inner">
+                \${minimapElements.map((el, i) => {
+                  if (el.type === 'cursor') {
+                    const cls = 'minimap-cursor' + (el.isSelf ? ' self' : '')
+                    const style = 'left:' + el.x + 'px;top:' + el.y + 'px;background:' + el.color
+                    return html\`<div key=\${i} class=\${cls} style=\${style} />\`
+                  } else if (el.type === 'arrow') {
+                    const style = 'left:' + el.x + 'px;top:' + el.y + 'px;border-bottom-color:' + el.color + ';transform:translate(-50%,-50%) rotate(' + el.rotation + 'deg)'
+                    return html\`<div key=\${i} class="minimap-arrow" style=\${style} />\`
+                  } else if (el.type === 'enemy') {
+                    const style = 'left:' + el.x + 'px;top:' + el.y + 'px;background:#e94560;width:6px;height:6px'
+                    return html\`<div key=\${i} class="minimap-cursor" style=\${style} />\`
+                  } else if (el.type === 'enemy-arrow') {
+                    const style = 'left:' + el.x + 'px;top:' + el.y + 'px;border-bottom-color:#e94560;transform:translate(-50%,-50%) rotate(' + el.rotation + 'deg);opacity:0.7'
+                    return html\`<div key=\${i} class="minimap-arrow" style=\${style} />\`
+                  }
+                })}
+              </div>
+            </div>
+            \${drawDisabled && html\`
+              <div class="disabled-overlay">
+                DRAWING DISABLED
+                <span class="disabled-timer">\${disabledTimer}s</span>
+              </div>
+            \`}
           </div>
 
           <div class="toolbar">

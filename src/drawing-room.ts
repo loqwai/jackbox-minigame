@@ -4,6 +4,10 @@ export interface Env {
   DRAWING_ROOM: DurableObjectNamespace<DrawingRoom>
 }
 
+// WebRTC types (not available in Workers runtime, but needed for signaling relay)
+type RTCSessionDescriptionInit = { type: string; sdp?: string }
+type RTCIceCandidateInit = { candidate?: string; sdpMid?: string | null; sdpMLineIndex?: number | null }
+
 type Point = { x: number; y: number }
 type Stroke = { points: Point[]; color: string; size: number }
 
