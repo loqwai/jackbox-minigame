@@ -29,17 +29,69 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     #infinite-canvas {
       position: absolute; top: 0; left: 0;
       background: #ffffff;
-      cursor: crosshair
+      cursor: none
     }
     .toolbar {
       display: flex; flex-wrap: wrap; gap: 8px; padding: 10px;
       background: #16213e; justify-content: center; align-items: center; z-index: 10
     }
-    .color-btn {
-      width: 32px; height: 32px; border-radius: 50%;
-      border: 3px solid transparent; cursor: pointer
+    .paint-bucket {
+      position: relative; width: 44px; height: 52px;
+      cursor: pointer; display: flex; flex-direction: column;
+      align-items: center; transition: transform 0.1s
     }
-    .color-btn.active { border-color: #fff }
+    .paint-bucket:hover { transform: scale(1.1) }
+    .paint-bucket.active { transform: scale(1.15) }
+    .paint-bucket.empty { opacity: 0.5; cursor: not-allowed }
+    .bucket-body {
+      width: 28px; height: 24px; border-radius: 0 0 6px 6px;
+      position: relative; overflow: hidden;
+      border: 2px solid rgba(0,0,0,0.3); border-top: none
+    }
+    .bucket-rim {
+      width: 34px; height: 6px; border-radius: 2px;
+      border: 2px solid rgba(0,0,0,0.3); margin-bottom: -1px
+    }
+    .bucket-handle {
+      position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+      width: 18px; height: 10px; border: 3px solid rgba(0,0,0,0.4);
+      border-bottom: none; border-radius: 8px 8px 0 0
+    }
+    .bucket-fill {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      transition: height 0.3s ease
+    }
+    .paint-spill {
+      position: absolute; top: 4px; right: -8px;
+      width: 14px; height: 20px; border-radius: 0 0 50% 50%;
+      transform: rotate(30deg); opacity: 0.9
+    }
+    .paint-drops {
+      position: absolute; top: 22px; right: -6px;
+      display: flex; flex-direction: column; gap: 3px
+    }
+    .paint-drop {
+      width: 5px; height: 7px; border-radius: 50% 50% 50% 50%;
+      animation: drip 1.5s ease-in-out infinite
+    }
+    .paint-drop:nth-child(2) { animation-delay: 0.5s; width: 4px; height: 5px }
+    .paint-drop:nth-child(3) { animation-delay: 1s; width: 3px; height: 4px }
+    @keyframes drip {
+      0%, 100% { opacity: 0.8; transform: translateY(0) }
+      50% { opacity: 0.4; transform: translateY(4px) }
+    }
+    .bucket-level {
+      position: absolute; bottom: -4px; left: 50%; transform: translateX(-50%);
+      font-size: 8px; color: #fff; font-weight: bold;
+      text-shadow: 0 0 2px rgba(0,0,0,0.8)
+    }
+    .reload-bar {
+      position: absolute; bottom: -8px; left: 0; right: 0;
+      height: 3px; background: rgba(0,0,0,0.3); border-radius: 2px
+    }
+    .reload-progress {
+      height: 100%; border-radius: 2px; transition: width 0.1s
+    }
     .tool-btn {
       padding: 6px 12px; border: none; border-radius: 6px;
       background: #0f3460; color: #fff; font-size: 12px; cursor: pointer
@@ -343,9 +395,30 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       const [disabledTimer, setDisabledTimer] = useState(0)
       const enemies = useRef([])  // Array of {x, y, id} in world coordinates
       const ENEMY_SIZE = 25  // Enemy radius in world units
-      const ENEMY_SPEED = 80  // Pixels per second in world units
+      const ENEMY_SPEED = 140  // Pixels per second in world units (faster!)
       const ENEMY_COUNT = 3  // Number of enemies
       const DISABLE_DURATION = 5  // Seconds player can't draw
+      const LINE_BREAK_INTERVAL = 10000  // ms between line break attempts
+      const LINE_BREAK_CHANCE = 0.5  // 50% chance to break a line
+
+      // Paint system - each color has limited paint that reloads
+      const MAX_PAINT = 100
+      const PAINT_RELOAD_RATE = 8  // Units per second
+      const PAINT_USE_RATE = 0.5  // Per pixel drawn (adjusted by brush size)
+      const initPaintLevels = () => {
+        const levels = {}
+        COLORS.forEach(c => { levels[c] = MAX_PAINT })
+        return levels
+      }
+      const [paintLevels, setPaintLevels] = useState(initPaintLevels)
+      const paintLevelsRef = useRef(paintLevels)
+      useEffect(() => { paintLevelsRef.current = paintLevels }, [paintLevels])
+
+      // Paint pickups
+      const pickups = useRef([])  // Array of {x, y, id, color}
+      const PICKUP_SIZE = 20
+      const PICKUP_SPAWN_INTERVAL = 10000  // ms between spawns
+      const MAX_PICKUPS = 5
 
       const canvasRef = useRef(null)
       const containerRef = useRef(null)
@@ -355,6 +428,9 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       const gestureState = useRef({ active: false, lastMid: null, lastDist: null })
       const currentPoints = useRef([])
       const allStrokes = useRef([])  // Store all strokes for redraw
+      const currentColorRef = useRef(currentColor)  // For renderCanvas access
+      const isEraserRef = useRef(isEraser)
+      const brushSizeRef = useRef(brushSize)
 
       // Online/offline detection
       useEffect(() => {
@@ -371,6 +447,20 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       // Store view in ref for render function
       const viewRef = useRef(view)
       useEffect(() => { viewRef.current = view }, [view])
+
+      // Keep color/brush refs in sync
+      useEffect(() => { currentColorRef.current = currentColor }, [currentColor])
+      useEffect(() => { isEraserRef.current = isEraser }, [isEraser])
+      useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
+
+      // Helper to lighten/darken colors for gradients
+      const adjustColor = (hex, percent) => {
+        const num = parseInt(hex.replace('#', ''), 16)
+        const r = Math.min(255, Math.max(0, (num >> 16) + percent))
+        const g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + percent))
+        const b = Math.min(255, Math.max(0, (num & 0x0000FF) + percent))
+        return '#' + (0x1000000 + (r << 16) + (g << 8) + b).toString(16).slice(1)
+      }
 
       // Render all strokes with current transform
       const renderCanvas = useCallback(() => {
@@ -399,25 +489,44 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           ctx.stroke()
         })
 
-        // Draw enemies
+        // Draw current stroke in progress (fixes visibility while drawing)
+        if (currentPoints.current.length >= 2) {
+          const color = isEraserRef.current ? '#ffffff' : currentColorRef.current
+          ctx.strokeStyle = color
+          ctx.lineWidth = brushSizeRef.current
+          ctx.lineCap = 'round'
+          ctx.lineJoin = 'round'
+          ctx.beginPath()
+          ctx.moveTo(currentPoints.current[0].x, currentPoints.current[0].y)
+          for (let i = 1; i < currentPoints.current.length; i++) {
+            ctx.lineTo(currentPoints.current[i].x, currentPoints.current[i].y)
+          }
+          ctx.stroke()
+        }
+
+        // Draw enemies - scale size with zoom so they stay consistent on screen
+        const enemyColor = currentColorRef.current === '#ffffff' ? '#e94560' : currentColorRef.current
+        const scaledEnemySize = ENEMY_SIZE / v.zoom  // Keeps screen size consistent
+
         enemies.current.forEach(enemy => {
-          // Enemy body (red circle with gradient)
-          const gradient = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, ENEMY_SIZE)
-          gradient.addColorStop(0, '#ff6b6b')
-          gradient.addColorStop(0.7, '#e94560')
-          gradient.addColorStop(1, '#c0392b')
+          // Enemy body with gradient matching selected color
+          const gradient = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, scaledEnemySize)
+          gradient.addColorStop(0, adjustColor(enemyColor, 60))
+          gradient.addColorStop(0.7, enemyColor)
+          gradient.addColorStop(1, adjustColor(enemyColor, -40))
           ctx.fillStyle = gradient
           ctx.beginPath()
-          ctx.arc(enemy.x, enemy.y, ENEMY_SIZE, 0, Math.PI * 2)
+          ctx.arc(enemy.x, enemy.y, scaledEnemySize, 0, Math.PI * 2)
           ctx.fill()
 
-          // Enemy eyes (looking toward player)
+          // Enemy eyes (looking toward player) - scale with zoom
           const dx = myCursor.current.x - enemy.x
           const dy = myCursor.current.y - enemy.y
           const angle = Math.atan2(dy, dx)
-          const eyeOffset = 8
-          const eyeRadius = 5
-          const pupilRadius = 2.5
+          const eyeOffset = 8 / v.zoom
+          const eyeRadius = 5 / v.zoom
+          const pupilRadius = 2.5 / v.zoom
+          const pupilOffset = 2 / v.zoom
 
           // Left eye
           const leftEyeX = enemy.x + Math.cos(angle - 0.4) * eyeOffset
@@ -428,7 +537,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           ctx.fill()
           ctx.fillStyle = '#000'
           ctx.beginPath()
-          ctx.arc(leftEyeX + Math.cos(angle) * 2, leftEyeY + Math.sin(angle) * 2, pupilRadius, 0, Math.PI * 2)
+          ctx.arc(leftEyeX + Math.cos(angle) * pupilOffset, leftEyeY + Math.sin(angle) * pupilOffset, pupilRadius, 0, Math.PI * 2)
           ctx.fill()
 
           // Right eye
@@ -440,9 +549,172 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           ctx.fill()
           ctx.fillStyle = '#000'
           ctx.beginPath()
-          ctx.arc(rightEyeX + Math.cos(angle) * 2, rightEyeY + Math.sin(angle) * 2, pupilRadius, 0, Math.PI * 2)
+          ctx.arc(rightEyeX + Math.cos(angle) * pupilOffset, rightEyeY + Math.sin(angle) * pupilOffset, pupilRadius, 0, Math.PI * 2)
           ctx.fill()
         })
+
+        // Draw paint pickups (paint cans)
+        const scaledPickupSize = PICKUP_SIZE / v.zoom
+        pickups.current.forEach(pickup => {
+          // Paint can body
+          const canGradient = ctx.createLinearGradient(
+            pickup.x - scaledPickupSize, pickup.y,
+            pickup.x + scaledPickupSize, pickup.y
+          )
+          canGradient.addColorStop(0, adjustColor(pickup.color, -30))
+          canGradient.addColorStop(0.5, pickup.color)
+          canGradient.addColorStop(1, adjustColor(pickup.color, -30))
+
+          // Can body
+          ctx.fillStyle = canGradient
+          ctx.beginPath()
+          ctx.roundRect(
+            pickup.x - scaledPickupSize * 0.7,
+            pickup.y - scaledPickupSize * 0.5,
+            scaledPickupSize * 1.4,
+            scaledPickupSize * 1.2,
+            scaledPickupSize * 0.2
+          )
+          ctx.fill()
+
+          // Can rim (top)
+          ctx.fillStyle = adjustColor(pickup.color, 40)
+          ctx.beginPath()
+          ctx.ellipse(pickup.x, pickup.y - scaledPickupSize * 0.5,
+            scaledPickupSize * 0.8, scaledPickupSize * 0.25, 0, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Paint drip
+          ctx.fillStyle = pickup.color
+          ctx.beginPath()
+          ctx.ellipse(pickup.x + scaledPickupSize * 0.5, pickup.y,
+            scaledPickupSize * 0.2, scaledPickupSize * 0.4, 0.3, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Sparkle effect
+          ctx.fillStyle = 'rgba(255,255,255,0.8)'
+          ctx.beginPath()
+          ctx.arc(pickup.x - scaledPickupSize * 0.3, pickup.y - scaledPickupSize * 0.3,
+            scaledPickupSize * 0.15, 0, Math.PI * 2)
+          ctx.fill()
+        })
+
+        // Draw Splatoon-inspired player character (squid kid)
+        const playerX = myCursor.current.x
+        const playerY = myCursor.current.y
+        const playerSize = 20 / v.zoom  // Consistent screen size
+        const playerColor = currentColorRef.current === '#ffffff' ? '#e94560' : currentColorRef.current
+
+        // Calculate facing direction based on recent movement
+        const lastPoints = currentPoints.current
+        let facingAngle = 0
+        if (lastPoints.length >= 2) {
+          const p1 = lastPoints[lastPoints.length - 2]
+          const p2 = lastPoints[lastPoints.length - 1]
+          facingAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x)
+        }
+
+        // Squid body (rounded blob shape)
+        const bodyGradient = ctx.createRadialGradient(
+          playerX, playerY - playerSize * 0.2, 0,
+          playerX, playerY, playerSize * 1.2
+        )
+        bodyGradient.addColorStop(0, adjustColor(playerColor, 50))
+        bodyGradient.addColorStop(0.6, playerColor)
+        bodyGradient.addColorStop(1, adjustColor(playerColor, -40))
+
+        ctx.fillStyle = bodyGradient
+        ctx.beginPath()
+        ctx.ellipse(playerX, playerY, playerSize * 0.9, playerSize * 1.1, 0, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Tentacles (6 wavy legs at the bottom)
+        const tentacleCount = 6
+        for (let i = 0; i < tentacleCount; i++) {
+          const angle = (Math.PI * 0.3) + (i / (tentacleCount - 1)) * (Math.PI * 0.4)
+          const wobble = Math.sin(Date.now() / 150 + i) * playerSize * 0.15
+          const tentacleLen = playerSize * 0.8
+
+          const startX = playerX + Math.cos(angle + Math.PI * 0.5) * playerSize * 0.5
+          const startY = playerY + playerSize * 0.7
+          const endX = startX + Math.cos(angle + Math.PI * 0.5) * tentacleLen + wobble
+          const endY = startY + Math.sin(Math.PI * 0.5) * tentacleLen
+
+          ctx.strokeStyle = playerColor
+          ctx.lineWidth = playerSize * 0.15
+          ctx.lineCap = 'round'
+          ctx.beginPath()
+          ctx.moveTo(startX, startY)
+          ctx.quadraticCurveTo(startX + wobble * 0.5, startY + tentacleLen * 0.5, endX, endY)
+          ctx.stroke()
+        }
+
+        // Eyes (big cute eyes)
+        const eyeOffsetX = playerSize * 0.3
+        const eyeOffsetY = -playerSize * 0.1
+        const eyeSize = playerSize * 0.35
+
+        // Left eye white
+        ctx.fillStyle = '#fff'
+        ctx.beginPath()
+        ctx.ellipse(playerX - eyeOffsetX, playerY + eyeOffsetY, eyeSize, eyeSize * 1.2, 0, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Right eye white
+        ctx.beginPath()
+        ctx.ellipse(playerX + eyeOffsetX, playerY + eyeOffsetY, eyeSize, eyeSize * 1.2, 0, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Pupils (look in facing direction)
+        const pupilOffset = eyeSize * 0.25
+        const pupilX = Math.cos(facingAngle) * pupilOffset
+        const pupilY = Math.sin(facingAngle) * pupilOffset
+        const pupilSize = eyeSize * 0.5
+
+        ctx.fillStyle = '#000'
+        ctx.beginPath()
+        ctx.arc(playerX - eyeOffsetX + pupilX, playerY + eyeOffsetY + pupilY, pupilSize, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(playerX + eyeOffsetX + pupilX, playerY + eyeOffsetY + pupilY, pupilSize, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Eye highlights
+        ctx.fillStyle = 'rgba(255,255,255,0.8)'
+        ctx.beginPath()
+        ctx.arc(playerX - eyeOffsetX - pupilSize * 0.3, playerY + eyeOffsetY - pupilSize * 0.3, pupilSize * 0.4, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(playerX + eyeOffsetX - pupilSize * 0.3, playerY + eyeOffsetY - pupilSize * 0.3, pupilSize * 0.4, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Ink splatter effect when drawing
+        if (isDrawing.current && !isEraserRef.current && currentPoints.current.length > 1) {
+          const inkSpots = 5
+          for (let i = 0; i < inkSpots; i++) {
+            const spreadAngle = facingAngle + (Math.random() - 0.5) * 1.2
+            const spreadDist = playerSize * (1.5 + Math.random() * 2)
+            const spotX = playerX + Math.cos(spreadAngle) * spreadDist
+            const spotY = playerY + Math.sin(spreadAngle) * spreadDist
+            const spotSize = playerSize * (0.1 + Math.random() * 0.2)
+
+            ctx.fillStyle = playerColor
+            ctx.globalAlpha = 0.3 + Math.random() * 0.4
+            ctx.beginPath()
+            ctx.arc(spotX, spotY, spotSize, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          ctx.globalAlpha = 1
+        }
+
+        // Top of head (pointy squid top)
+        ctx.fillStyle = playerColor
+        ctx.beginPath()
+        ctx.moveTo(playerX, playerY - playerSize * 1.4)
+        ctx.lineTo(playerX - playerSize * 0.3, playerY - playerSize * 0.5)
+        ctx.lineTo(playerX + playerSize * 0.3, playerY - playerSize * 0.5)
+        ctx.closePath()
+        ctx.fill()
 
         ctx.restore()
       }, [])
@@ -563,21 +835,48 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             let newX = enemy.x + dirX * moveSpeed
             let newY = enemy.y + dirY * moveSpeed
 
-            // Check collision with strokes - try to slide along walls
+            // Check collision with strokes - improved pathfinding
             if (collidesWithStroke(newX, newY, ENEMY_SIZE)) {
               // Try moving only in X
               if (!collidesWithStroke(newX, enemy.y, ENEMY_SIZE)) {
-                return { ...enemy, x: newX }
+                return { ...enemy, x: newX, wallFollowDir: enemy.wallFollowDir || 1 }
               }
               // Try moving only in Y
               if (!collidesWithStroke(enemy.x, newY, ENEMY_SIZE)) {
-                return { ...enemy, y: newY }
+                return { ...enemy, y: newY, wallFollowDir: enemy.wallFollowDir || 1 }
               }
-              // Can't move - stuck behind wall
+
+              // Wall following - try perpendicular directions
+              const perpDir = enemy.wallFollowDir || (Math.random() > 0.5 ? 1 : -1)
+              const perpX = -dirY * perpDir
+              const perpY = dirX * perpDir
+              const slideX = enemy.x + perpX * moveSpeed * 1.5
+              const slideY = enemy.y + perpY * moveSpeed * 1.5
+
+              if (!collidesWithStroke(slideX, slideY, ENEMY_SIZE)) {
+                return { ...enemy, x: slideX, y: slideY, wallFollowDir: perpDir }
+              }
+
+              // Try opposite perpendicular
+              const oppSlideX = enemy.x - perpX * moveSpeed * 1.5
+              const oppSlideY = enemy.y - perpY * moveSpeed * 1.5
+              if (!collidesWithStroke(oppSlideX, oppSlideY, ENEMY_SIZE)) {
+                return { ...enemy, x: oppSlideX, y: oppSlideY, wallFollowDir: -perpDir }
+              }
+
+              // Still stuck - try random direction
+              const randAngle = Math.random() * Math.PI * 2
+              const randX = enemy.x + Math.cos(randAngle) * moveSpeed
+              const randY = enemy.y + Math.sin(randAngle) * moveSpeed
+              if (!collidesWithStroke(randX, randY, ENEMY_SIZE)) {
+                return { ...enemy, x: randX, y: randY }
+              }
+
               return enemy
             }
 
-            return { ...enemy, x: newX, y: newY }
+            // Clear wall follow direction when not blocked
+            return { ...enemy, x: newX, y: newY, wallFollowDir: null }
           })
 
           // Disable drawing if player was hit
@@ -601,6 +900,34 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
               return enemy
             })
           }
+
+          // Reload paint over time (all colors reload slowly)
+          setPaintLevels(prev => {
+            const next = { ...prev }
+            let changed = false
+            COLORS.forEach(c => {
+              if (c !== '#ffffff' && next[c] < MAX_PAINT) {
+                next[c] = Math.min(MAX_PAINT, next[c] + PAINT_RELOAD_RATE * deltaTime)
+                changed = true
+              }
+            })
+            return changed ? next : prev
+          })
+
+          // Check pickup collision
+          pickups.current = pickups.current.filter(pickup => {
+            const dx = myCursor.current.x - pickup.x
+            const dy = myCursor.current.y - pickup.y
+            if (Math.hypot(dx, dy) < PICKUP_SIZE + 15) {
+              // Collected! Instantly refill that color
+              setPaintLevels(prev => ({
+                ...prev,
+                [pickup.color]: MAX_PAINT
+              }))
+              return false  // Remove pickup
+            }
+            return true
+          })
 
           renderCanvas()
           animationId = requestAnimationFrame(gameLoop)
@@ -628,6 +955,67 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
         return () => clearInterval(interval)
       }, [drawDisabled])
+
+      // Spawn paint pickups periodically
+      useEffect(() => {
+        const spawnPickup = () => {
+          if (pickups.current.length >= MAX_PICKUPS) return
+
+          // Spawn near player but not too close
+          const angle = Math.random() * Math.PI * 2
+          const distance = 200 + Math.random() * 400
+          const x = myCursor.current.x + Math.cos(angle) * distance
+          const y = myCursor.current.y + Math.sin(angle) * distance
+
+          // Random color (not white)
+          const colorOptions = COLORS.filter(c => c !== '#ffffff')
+          const color = colorOptions[Math.floor(Math.random() * colorOptions.length)]
+
+          pickups.current.push({
+            x, y,
+            id: Date.now() + Math.random(),
+            color
+          })
+        }
+
+        // Spawn initial pickups
+        for (let i = 0; i < 3; i++) spawnPickup()
+
+        const interval = setInterval(spawnPickup, PICKUP_SPAWN_INTERVAL)
+        return () => clearInterval(interval)
+      }, [])
+
+      // Enemy line breaking - 50% chance every 10 seconds to break nearby drawings
+      useEffect(() => {
+        const tryBreakLines = () => {
+          enemies.current.forEach(enemy => {
+            if (Math.random() > LINE_BREAK_CHANCE) return  // 50% chance
+
+            // Find strokes near this enemy
+            let closestIdx = -1
+            let closestDist = Infinity
+
+            allStrokes.current.forEach((stroke, idx) => {
+              if (stroke.color === '#ffffff') return  // Skip eraser strokes
+              stroke.points.forEach(point => {
+                const dist = Math.hypot(point.x - enemy.x, point.y - enemy.y)
+                if (dist < closestDist && dist < 200) {  // Within 200 units
+                  closestDist = dist
+                  closestIdx = idx
+                }
+              })
+            })
+
+            // Break the closest stroke
+            if (closestIdx >= 0) {
+              allStrokes.current.splice(closestIdx, 1)
+            }
+          })
+        }
+
+        const interval = setInterval(tryBreakLines, LINE_BREAK_INTERVAL)
+        return () => clearInterval(interval)
+      }, [])
 
       // Draw stroke in world coordinates (applies current transform)
       const drawStrokeWorld = useCallback((points, color, size) => {
@@ -835,10 +1223,14 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         // Right-click = erase
         if (e.button === 2) setTempEraser(true)
 
+        // Check if we have paint for this color (eraser always works)
+        const erasing = e.button === 2 || isEraser
+        if (!erasing && paintLevelsRef.current[currentColor] <= 0) return
+
         // Single pointer = draw
         isDrawing.current = true
         currentPoints.current = [startPoint]
-      }, [getWorldCoords, broadcastCursor, drawDisabled])
+      }, [getWorldCoords, broadcastCursor, drawDisabled, currentColor, isEraser])
 
       const handlePointerMove = useCallback((e) => {
         e.preventDefault()
@@ -878,8 +1270,26 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
         if (!isDrawing.current) return
 
-        currentPoints.current.push(point)
         const erasing = isEraser || tempEraser
+
+        // Check if we have paint (eraser doesn't use paint)
+        if (!erasing && paintLevelsRef.current[currentColor] <= 0) {
+          isDrawing.current = false
+          return
+        }
+
+        // Deplete paint based on distance drawn
+        if (!erasing && currentPoints.current.length > 0) {
+          const lastPoint = currentPoints.current[currentPoints.current.length - 1]
+          const dist = Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y)
+          const paintUsed = dist * PAINT_USE_RATE * (brushSize / 10)
+          setPaintLevels(prev => ({
+            ...prev,
+            [currentColor]: Math.max(0, prev[currentColor] - paintUsed)
+          }))
+        }
+
+        currentPoints.current.push(point)
         const color = erasing ? '#ffffff' : currentColor
         if (currentPoints.current.length >= 2) {
           drawStrokeWorld(currentPoints.current.slice(-2), color, brushSize)
@@ -1045,12 +1455,13 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       // Build minimap cursor elements
       const minimapElements = []
 
-      // Add self cursor (center)
+      // Add self cursor (center) - use selected color
+      const selfColor = currentColor === '#ffffff' ? '#e94560' : currentColor
       minimapElements.push({
         type: 'cursor',
         x: MINIMAP_CENTER,
         y: MINIMAP_CENTER,
-        color: '#fff',
+        color: selfColor,
         isSelf: true
       })
 
@@ -1149,13 +1560,31 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           </div>
 
           <div class="toolbar">
-            \${COLORS.map(c => {
+            \${COLORS.filter(c => c !== '#ffffff').map(c => {
               const active = currentColor === c && !isEraser
-              const cls = 'color-btn' + (active ? ' active' : '')
-              const style = 'background:' + c + (c === '#ffffff' ? ';border:1px solid #ccc' : '')
+              const paintLevel = paintLevels[c] || 0
+              const fillPercent = (paintLevel / MAX_PAINT) * 100
+              const isEmpty = paintLevel <= 0
+              const cls = 'paint-bucket' + (active ? ' active' : '') + (isEmpty ? ' empty' : '')
               return html\`
-                <button class=\${cls} style=\${style}
-                  onClick=\${() => { setCurrentColor(c); setIsEraser(false) }} />
+                <div class=\${cls} onClick=\${() => { if (!isEmpty) { setCurrentColor(c); setIsEraser(false) } }}>
+                  <div class="bucket-handle" style="border-color:\${c}" />
+                  <div class="bucket-rim" style="background:\${c}" />
+                  <div class="bucket-body" style="background:rgba(0,0,0,0.2)">
+                    <div class="bucket-fill" style="background:\${c};height:\${fillPercent}%" />
+                  </div>
+                  \${paintLevel > 20 && html\`
+                    <div class="paint-spill" style="background:\${c}" />
+                    <div class="paint-drops">
+                      <div class="paint-drop" style="background:\${c}" />
+                      <div class="paint-drop" style="background:\${c}" />
+                      <div class="paint-drop" style="background:\${c}" />
+                    </div>
+                  \`}
+                  <div class="reload-bar">
+                    <div class="reload-progress" style="width:\${fillPercent}%;background:\${c}" />
+                  </div>
+                </div>
               \`
             })}
 
