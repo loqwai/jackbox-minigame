@@ -1366,6 +1366,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       // Enemy line breaking - 50% chance every 10 seconds to break nearby drawings
       useEffect(() => {
         const tryBreakLines = () => {
+          const strokesToDelete = []
+
           enemies.current.forEach(enemy => {
             if (Math.random() > LINE_BREAK_CHANCE) return  // 50% chance
 
@@ -1373,8 +1375,9 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             let closestIdx = -1
             let closestDist = Infinity
 
-            allStrokes.current.forEach((stroke, idx) => {
+            yStrokes.toArray().forEach((stroke, idx) => {
               if (stroke.color === '#ffffff') return  // Skip eraser strokes
+              if (strokesToDelete.includes(idx)) return  // Already marked for deletion
               stroke.points.forEach(point => {
                 const dist = Math.hypot(point.x - enemy.x, point.y - enemy.y)
                 if (dist < closestDist && dist < 200) {  // Within 200 units
@@ -1384,11 +1387,20 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
               })
             })
 
-            // Break the closest stroke
-            if (closestIdx >= 0) {
-              allStrokes.current.splice(closestIdx, 1)
+            // Mark stroke for deletion
+            if (closestIdx >= 0 && !strokesToDelete.includes(closestIdx)) {
+              strokesToDelete.push(closestIdx)
             }
           })
+
+          // Delete strokes from Yjs in a single transaction (in reverse order to preserve indices)
+          if (strokesToDelete.length > 0) {
+            ydoc.transact(() => {
+              strokesToDelete.sort((a, b) => b - a).forEach(idx => {
+                yStrokes.delete(idx, 1)
+              })
+            })
+          }
         }
 
         const interval = setInterval(tryBreakLines, LINE_BREAK_INTERVAL)
