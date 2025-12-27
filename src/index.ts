@@ -29,6 +29,9 @@ export default {
     if (path === "/sw.js") return json(serviceWorkerJs, "application/javascript")
     if (path === "/") return Response.redirect(`${url.origin}/room/${generateRoomId()}`, 302)
 
+    // Serve static assets from /js/
+    if (path.startsWith("/js/")) return env.ASSETS.fetch(request)
+
     const roomMatch = path.match(/^\/room\/([A-Za-z0-9]+)(\/.*)?$/)
     if (!roomMatch) return new Response("Not Found", { status: 404 })
 
