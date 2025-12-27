@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers"
 
-export interface Env {
+interface Env {
   DRAWING_ROOM: DurableObjectNamespace<DrawingRoom>
 }
 
