@@ -7,13 +7,14 @@ import {
   hasPaint,
   getPaintPercent
 } from './paint.js'
+import { MAX_PAINT } from '../constants/game.js'
 
 describe('initPaintLevels', () => {
   it('initializes all colors to max paint', () => {
     const levels = initPaintLevels()
-    expect(levels['#000000']).toBe(100)
-    expect(levels['#e94560']).toBe(100)
-    expect(levels['#ffffff']).toBe(100)
+    expect(levels['#000000']).toBe(MAX_PAINT)
+    expect(levels['#e94560']).toBe(MAX_PAINT)
+    expect(levels['#ffffff']).toBe(MAX_PAINT)
   })
 })
 
@@ -26,12 +27,12 @@ describe('consumePaint', () => {
 
   it('reduces paint for color used', () => {
     const result = consumePaint(levels, '#000000', 10, 10)
-    expect(result['#000000']).toBeLessThan(100)
+    expect(result['#000000']).toBeLessThan(MAX_PAINT)
   })
 
   it('does not reduce paint for white (eraser)', () => {
     const result = consumePaint(levels, '#ffffff', 10, 10)
-    expect(result['#ffffff']).toBe(100)
+    expect(result['#ffffff']).toBe(MAX_PAINT)
   })
 
   it('scales consumption with brush size', () => {
@@ -61,9 +62,9 @@ describe('reloadPaint', () => {
   })
 
   it('does not exceed max paint', () => {
-    const levels = { '#000000': 99, '#ffffff': 100 }
+    const levels = { '#000000': MAX_PAINT - 1, '#ffffff': MAX_PAINT }
     const result = reloadPaint(levels, 10)
-    expect(result['#000000']).toBe(100)
+    expect(result['#000000']).toBe(MAX_PAINT)
   })
 
   it('does not reload white', () => {
@@ -83,7 +84,7 @@ describe('refillColor', () => {
   it('sets color to max paint', () => {
     const levels = { '#000000': 10 }
     const result = refillColor(levels, '#000000')
-    expect(result['#000000']).toBe(100)
+    expect(result['#000000']).toBe(MAX_PAINT)
   })
 })
 
@@ -107,7 +108,7 @@ describe('getPaintPercent', () => {
   })
 
   it('returns percentage of max', () => {
-    expect(getPaintPercent({ '#000000': 50 }, '#000000')).toBe(50)
-    expect(getPaintPercent({ '#000000': 25 }, '#000000')).toBe(25)
+    expect(getPaintPercent({ '#000000': MAX_PAINT / 2 }, '#000000')).toBe(50)
+    expect(getPaintPercent({ '#000000': MAX_PAINT / 4 }, '#000000')).toBe(25)
   })
 })

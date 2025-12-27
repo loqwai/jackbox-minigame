@@ -1,6 +1,6 @@
 // Yjs synchronization hooks
 import { useEffect } from 'preact/hooks'
-import { yStrokes, yEnemies, yPickups, awareness } from '../sync/yjs-setup.js'
+import { yStrokes, yEnemies, yPickups, yTerritory, awareness } from '../sync/yjs-setup.js'
 
 export const useStrokesSync = (onStrokesChange) => {
   useEffect(() => {
@@ -70,4 +70,48 @@ export const useAwarenessSync = (peerId, onCursorsChange) => {
 
 export const broadcastCursor = (x, y, color) => {
   awareness.setLocalStateField('cursor', { x, y, color })
+}
+
+export const useTerritorySync = (onTerritoryChange) => {
+  useEffect(() => {
+    const observer = (event, transaction) => {
+      if (transaction.local) return  // Only sync from remote
+      const territoryData = {}
+      yTerritory.forEach((value, key) => {
+        territoryData[key] = value
+      })
+      onTerritoryChange(territoryData)
+    }
+    yTerritory.observe(observer)
+
+    // Initial load
+    if (yTerritory.size > 0) {
+      const territoryData = {}
+      yTerritory.forEach((value, key) => {
+        territoryData[key] = value
+      })
+      onTerritoryChange(territoryData)
+    }
+
+    return () => yTerritory.unobserve(observer)
+  }, [onTerritoryChange])
+}
+
+export const syncTerritory = (territoryMap) => {
+  // Batch update territory to Yjs
+  const updates = []
+  territoryMap.forEach((cell, key) => {
+    const existing = yTerritory.get(key)
+    if (!existing || existing.color !== cell.color || existing.strength !== cell.strength) {
+      updates.push([key, cell])
+    }
+  })
+
+  if (updates.length > 0) {
+    yTerritory.doc.transact(() => {
+      updates.forEach(([key, cell]) => {
+        yTerritory.set(key, cell)
+      })
+    })
+  }
 }

@@ -9,9 +9,9 @@ export const LINE_BREAK_INTERVAL = 10000
 export const LINE_BREAK_CHANCE = 0.5
 
 // Paint system
-export const MAX_PAINT = 100
-export const PAINT_RELOAD_RATE = 3
-export const PAINT_USE_RATE = 2.5
+export const MAX_PAINT = 250
+export const PAINT_RELOAD_RATE = 8
+export const PAINT_USE_RATE = 1.0
 
 // Pickups
 export const PICKUP_SIZE = 20

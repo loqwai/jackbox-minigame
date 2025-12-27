@@ -8,6 +8,7 @@ import { initPaintLevels, consumePaint, reloadPaint, refillColor, hasPaint } fro
 import { moveEnemy, spawnEnemy, checkPlayerCollision, respawnEnemyAwayFromPlayer } from '../game/enemies.js'
 import { checkPickupCollision, spawnPickup } from '../game/pickups.js'
 import { selectStrokesToBreak } from '../game/line-break.js'
+import { createSpreadSimulation, processEraserStroke, SPREAD_CONFIG } from '../game/ink-spread.js'
 import { renderCanvas } from '../render/canvas.js'
 import { getWorldCoordsFromEvent } from '../input/pointer.js'
 import { calculateWheelZoom, calculateButtonZoom, resetViewToOrigin } from '../input/wheel.js'
@@ -20,7 +21,7 @@ import { useCanvas } from '../hooks/use-canvas.js'
 import { useOnlineStatus } from '../hooks/use-online-status.js'
 import { useWebSocket } from '../hooks/use-websocket.js'
 import { useGameLoop } from '../hooks/use-game-loop.js'
-import { useStrokesSync, useEnemiesSync, usePickupsSync, useAwarenessSync, broadcastCursor } from '../hooks/use-yjs-sync.js'
+import { useStrokesSync, useEnemiesSync, usePickupsSync, useAwarenessSync, useTerritorySync, broadcastCursor, syncTerritory } from '../hooks/use-yjs-sync.js'
 
 import { Header } from './Header.js'
 import { Toolbar } from './Toolbar.js'
@@ -57,6 +58,9 @@ export const App = ({ roomId, peerId }) => {
   const [, setStrokesVersion] = useState(0)
   const enemies = useRef([])
   const pickups = useRef([])
+  const spreadSim = useRef(createSpreadSimulation())
+  const lastSpreadSync = useRef(0)
+  const processedStrokeCount = useRef(0)
 
   // Drawing refs
   const isDrawing = useRef(false)
@@ -101,7 +105,8 @@ export const App = ({ roomId, peerId }) => {
       pickups: pickups.current,
       playerPos: myCursor.current,
       isDrawing: isDrawing.current,
-      remoteCursors
+      remoteCursors,
+      spreadSim: spreadSim.current
     })
   }, [remoteCursors])
 
@@ -110,9 +115,43 @@ export const App = ({ roomId, peerId }) => {
   // Yjs sync
   useStrokesSync(useCallback((s) => {
     strokes.current = s
+
+    // Handle stroke deletion - reset counter if strokes were cleared
+    if (s.length < processedStrokeCount.current) {
+      processedStrokeCount.current = 0
+      // Rebuild simulation from remaining strokes
+      spreadSim.current = createSpreadSimulation()
+      s.forEach((stroke, idx) => {
+        if (stroke?.color && stroke.color !== '#ffffff' && stroke.points?.length >= 2) {
+          spreadSim.current.spawnFromStroke(stroke, `stroke-${idx}`)
+        }
+      })
+      processedStrokeCount.current = s.length
+    }
+
+    // Spawn particles for new strokes
+    while (processedStrokeCount.current < s.length) {
+      const stroke = s[processedStrokeCount.current]
+      if (stroke?.points?.length >= 2) {
+        if (stroke.color === '#ffffff') {
+          processEraserStroke(spreadSim.current, stroke)
+        } else {
+          spreadSim.current.spawnFromStroke(stroke, `stroke-${processedStrokeCount.current}`)
+        }
+      }
+      processedStrokeCount.current++
+    }
+
     setStrokesVersion(v => v + 1)
     render()
   }, [render]))
+
+  // Territory sync (receive from host)
+  useTerritorySync(useCallback((territoryData) => {
+    if (!isHost()) {
+      spreadSim.current.loadTerritory(territoryData)
+    }
+  }, []))
 
   useEnemiesSync(useCallback((e) => { enemies.current = e }, []))
   usePickupsSync(useCallback((p) => { pickups.current = p }, []))
@@ -172,6 +211,26 @@ export const App = ({ roomId, peerId }) => {
           yEnemies.delete(0, yEnemies.length)
           yEnemies.push(enemies.current.map(e => ({ x: e.x, y: e.y, id: e.id })))
         })
+      }
+    }
+
+    // Ink spreading simulation - everyone runs locally for smooth visuals
+    if (isSynced() && spreadSim.current) {
+      try {
+        spreadSim.current.update(deltaTime)
+
+        // Prune dead particles periodically
+        if (currentTime % 5000 < 20) {
+          spreadSim.current.prune()
+        }
+
+        // Host syncs authoritative territory state to other clients
+        if (isHost() && currentTime - lastSpreadSync.current > SPREAD_CONFIG.updateInterval * 10) {
+          lastSpreadSync.current = currentTime
+          syncTerritory(spreadSim.current.getTerritory())
+        }
+      } catch (e) {
+        console.error('Spread simulation error:', e)
       }
     }
 

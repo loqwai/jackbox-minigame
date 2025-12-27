@@ -19,6 +19,7 @@ export const yPlayers = ydoc.getMap('players')
 export const yGameState = ydoc.getMap('gameState')
 export const yEnemies = ydoc.getArray('enemies')
 export const yPickups = ydoc.getArray('pickups')
+export const yTerritory = ydoc.getMap('territory')
 
 // Awareness for ephemeral state (cursors, presence)
 export const awareness = new Awareness(ydoc)
