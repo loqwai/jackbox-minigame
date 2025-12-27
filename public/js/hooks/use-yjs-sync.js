@@ -42,7 +42,7 @@ export const usePickupsSync = (onPickupsChange) => {
 
 export const useAwarenessSync = (peerId, onCursorsChange) => {
   useEffect(() => {
-    const handleChange = ({ added, updated, removed }) => {
+    const handleChange = ({ }) => {
       const states = awareness.getStates()
       const cursors = new Map()
 

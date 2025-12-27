@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect } from "vitest"
 import * as Y from "yjs"
 
 type Stroke = {
@@ -9,7 +9,7 @@ type Stroke = {
   peerId: string
 }
 
-const createStroke = (peerId: string, color = "#ff0000", id?: string): Stroke => ({
+const createStroke = (peerId: string, color = "#ff0000",): Stroke => ({
   points: [{ x: Math.random() * 1000, y: Math.random() * 1000 }],
   color,
   size: 5,
@@ -628,8 +628,6 @@ describe("State Desync Scenarios", () => {
       const strokes = doc.getArray<Stroke>("strokes")
 
       strokes.push([createStroke("p1", "#111")])
-
-      const beforeState = Y.encodeStateAsUpdate(doc)
 
       try {
         doc.transact(() => {

@@ -1,20 +1,19 @@
 // Main App component
 import { html } from 'htm/preact'
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks'
-import { COLORS } from '../constants/colors.js'
 import { ENEMY_COUNT, DISABLE_DURATION } from '../constants/game.js'
 import { yStrokes, yEnemies, yPickups, ydoc, isHost, isSynced } from '../sync/yjs-setup.js'
-import { handleSignaling, setOnPeerCountChange, setOnMessage, getPeerCount, cleanupPeer } from '../sync/webrtc.js'
+import { handleSignaling, setOnPeerCountChange, setOnMessage, getPeerCount } from '../sync/webrtc.js'
 import { initPaintLevels, consumePaint, reloadPaint, refillColor, hasPaint } from '../game/paint.js'
 import { moveEnemy, spawnEnemy, checkPlayerCollision, respawnEnemyAwayFromPlayer } from '../game/enemies.js'
 import { checkPickupCollision, spawnPickup } from '../game/pickups.js'
 import { selectStrokesToBreak } from '../game/line-break.js'
 import { renderCanvas } from '../render/canvas.js'
-import { getWorldCoordsFromEvent, calculatePinchZoom, isMultiTouch } from '../input/pointer.js'
+import { getWorldCoordsFromEvent, calculatePinchZoom } from '../input/pointer.js'
 import { calculateWheelZoom, calculateButtonZoom, resetViewToOrigin } from '../input/wheel.js'
 import { createGestureState, resetGestureState, activateGesture, updateGesture } from '../input/gestures.js'
 import { getDistance, getMidpoint } from '../math/geometry.js'
-import { getPeerColor, clearPeerColor } from '../state/peer-colors.js'
+import { clearPeerColor } from '../state/peer-colors.js'
 import { getLocalIp } from '../utils/network.js'
 import { generateQrSvg } from '../utils/qr.js'
 import { useCanvas } from '../hooks/use-canvas.js'
@@ -55,7 +54,7 @@ export const App = ({ roomId, peerId }) => {
 
   // Game state
   const strokes = useRef([])
-  const [strokesVersion, setStrokesVersion] = useState(0)
+  const [ setStrokesVersion] = useState(0)
   const enemies = useRef([])
   const pickups = useRef([])
 
@@ -180,7 +179,7 @@ export const App = ({ roomId, peerId }) => {
     setPaintLevels(prev => reloadPaint(prev, deltaTime))
 
     // Check pickup collision
-    const { collected, remaining } = checkPickupCollision(myCursor.current, pickups.current)
+    const { collected, } = checkPickupCollision(myCursor.current, pickups.current)
     if (collected.length > 0) {
       collected.forEach(p => setPaintLevels(prev => refillColor(prev, p.color)))
       ydoc.transact(() => {

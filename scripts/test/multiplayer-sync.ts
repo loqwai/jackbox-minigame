@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeEach } from "vitest"
 import * as Y from "yjs"
 import * as syncProtocol from "y-protocols/sync"
 import * as awarenessProtocol from "y-protocols/awareness"
@@ -7,7 +7,6 @@ import * as encoding from "lib0/encoding"
 import * as decoding from "lib0/decoding"
 
 const MESSAGE_SYNC = 0
-const MESSAGE_AWARENESS = 1
 
 type Stroke = {
   points: { x: number; y: number }[]
@@ -43,14 +42,6 @@ const syncClients = (source: Client, target: Client) => {
   const stateVector = Y.encodeStateVector(target.doc)
   const update = Y.encodeStateAsUpdate(source.doc, stateVector)
   Y.applyUpdate(target.doc, update)
-}
-
-const fullSync = (clients: Client[]) => {
-  for (const source of clients) {
-    for (const target of clients) {
-      if (source !== target) syncClients(source, target)
-    }
-  }
 }
 
 class MockServer {

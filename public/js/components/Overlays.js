@@ -8,7 +8,7 @@ export const DisabledOverlay = ({ timer }) => html`
   </div>
 `
 
-export const PaintWarning = ({ color, warningKey }) => html`
+export const PaintWarning = ({ warningKey }) => html`
   <div class="paint-warning" key=${warningKey}>
     OUT OF PAINT!
   </div>

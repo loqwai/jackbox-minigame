@@ -15,10 +15,12 @@
     "@biomejs/biome": "^1.9.4",
     "@cloudflare/workers-types": "^4.20241205.0",
     "knip": "^5.44.0",
+    "lib0": "^0.2.116",
     "remove-unused-vars": "^0.0.11",
     "typescript": "^5.7.2",
     "vitest": "^4.0.16",
-    "wrangler": "^4.54.0"
+    "wrangler": "^4.54.0",
+    "y-protocols": "^1.0.7"
   },
   "dependencies": {
     "hono": "^4.11.3",

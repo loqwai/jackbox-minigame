@@ -31,7 +31,7 @@ export const Minimap = ({ myPos, remoteCursors, enemies, selfColor, onGoToPlayer
   })
 
   // Enemies
-  enemies.forEach((enemy, i) => {
+  enemies.forEach((enemy,) => {
     const pos = worldToMinimap(enemy.x, enemy.y, myPos)
     if (isInMinimapBounds(pos.x, pos.y, 5)) {
       elements.push({ type: 'enemy', x: pos.x, y: pos.y })
