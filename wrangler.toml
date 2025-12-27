@@ -6,10 +6,20 @@ routes = [
   { pattern = "draw.hypnodroid.com", custom_domain = true }
 ]
 
+# Legacy drawing room (will be deprecated)
 [[durable_objects.bindings]]
 name = "DRAWING_ROOM"
 class_name = "DrawingRoom"
 
+# New Yjs-based drawing room with CRDT sync
+[[durable_objects.bindings]]
+name = "Y_DRAWING_ROOM"
+class_name = "YDrawingRoom"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["DrawingRoom"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["YDrawingRoom"]

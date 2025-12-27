@@ -1,10 +1,18 @@
-import { DrawingRoom, Env } from "./drawing-room"
+import { DrawingRoom } from "./drawing-room"
+import { YDrawingRoom } from "./y-drawing-room"
 import { drawHtml } from "./client/draw"
 import { presentHtml } from "./client/present"
 import { manifestJson } from "./client/manifest"
 import { serviceWorkerJs } from "./client/sw"
 
-export { DrawingRoom }
+// Export both Durable Objects
+export { DrawingRoom, YDrawingRoom }
+
+// Environment type with both bindings
+interface Env {
+  DRAWING_ROOM: DurableObjectNamespace<DrawingRoom>
+  Y_DRAWING_ROOM: DurableObjectNamespace<YDrawingRoom>
+}
 
 const generateRoomId = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -38,7 +46,15 @@ export default {
     const roomId = roomMatch[1].toUpperCase()
     const subPath = roomMatch[2] || ""
 
+    // Use Yjs-based room for WebSocket connections
     if (subPath === "/ws") {
+      const id = env.Y_DRAWING_ROOM.idFromName(roomId)
+      const stub = env.Y_DRAWING_ROOM.get(id)
+      return stub.fetch(request)
+    }
+
+    // Legacy endpoint (keep for backward compatibility during migration)
+    if (subPath === "/ws-legacy") {
       const id = env.DRAWING_ROOM.idFromName(roomId)
       const stub = env.DRAWING_ROOM.get(id)
       return stub.fetch(request)

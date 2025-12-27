@@ -43,6 +43,31 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     .paint-bucket:hover { transform: scale(1.1) }
     .paint-bucket.active { transform: scale(1.15) }
     .paint-bucket.empty { opacity: 0.5; cursor: not-allowed }
+    .paint-bucket.shake {
+      animation: shake 0.4s ease-in-out
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0) }
+      20% { transform: translateX(-4px) rotate(-5deg) }
+      40% { transform: translateX(4px) rotate(5deg) }
+      60% { transform: translateX(-3px) rotate(-3deg) }
+      80% { transform: translateX(3px) rotate(3deg) }
+    }
+    .paint-warning {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(233, 69, 96, 0.95);
+      color: #fff; padding: 12px 24px;
+      border-radius: 8px; font-size: 14px;
+      font-weight: bold; z-index: 35;
+      pointer-events: none;
+      animation: fadeOut 1.5s ease-out forwards
+    }
+    @keyframes fadeOut {
+      0% { opacity: 1; transform: translate(-50%, -50%) scale(1) }
+      70% { opacity: 1; transform: translate(-50%, -50%) scale(1) }
+      100% { opacity: 0; transform: translate(-50%, -60%) scale(0.9) }
+    }
     .bucket-body {
       width: 28px; height: 24px; border-radius: 0 0 6px 6px;
       position: relative; overflow: hidden;
@@ -247,6 +272,12 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     import { useRef, useEffect, useState, useCallback } from 'https://esm.sh/preact@10.25.4/hooks'
     import { html } from 'https://esm.sh/htm@3.1.1/preact?deps=preact@10.25.4'
     import qrcode from 'https://esm.sh/qrcode-generator@1.4.4'
+    import * as Y from 'https://esm.sh/yjs@13.6.20'
+    import { Awareness } from 'https://esm.sh/y-protocols@1.0.6/awareness'
+    import * as syncProtocol from 'https://esm.sh/y-protocols@1.0.6/sync'
+    import * as awarenessProtocol from 'https://esm.sh/y-protocols@1.0.6/awareness'
+    import * as encoding from 'https://esm.sh/lib0@0.2.99/encoding'
+    import * as decoding from 'https://esm.sh/lib0@0.2.99/decoding'
 
     // Register service worker
     if ('serviceWorker' in navigator) {
@@ -255,6 +286,85 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
     const ROOM_ID = "${roomId}"
     const COLORS = ["#000000", "#e94560", "#f39c12", "#2ecc71", "#3498db", "#9b59b6", "#1abc9c", "#ffffff"]
+
+    // ========================================
+    // YJS DOCUMENT & SYNC SETUP
+    // ========================================
+    // Message types for Yjs protocol
+    const messageSync = 0
+    const messageAwareness = 1
+
+    // Create Yjs document - this is the single source of truth
+    const ydoc = new Y.Doc()
+
+    // Shared types for collaborative state
+    const yStrokes = ydoc.getArray('strokes')
+    const yPlayers = ydoc.getMap('players')
+    const yGameState = ydoc.getMap('gameState')
+
+    // Awareness for ephemeral state (cursors, presence)
+    const awareness = new Awareness(ydoc)
+
+    // WebSocket provider for Yjs sync
+    let yjsWs = null
+    let yjsSynced = false
+
+    const setupYjsSync = (websocket) => {
+      yjsWs = websocket
+
+      // Send sync step 1 when connected
+      const encoder = encoding.createEncoder()
+      encoding.writeVarUint(encoder, messageSync)
+      syncProtocol.writeSyncStep1(encoder, ydoc)
+      websocket.send(encoding.toUint8Array(encoder))
+
+      // Handle incoming Yjs messages
+      websocket.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          const decoder = decoding.createDecoder(new Uint8Array(event.data))
+          const messageType = decoding.readVarUint(decoder)
+
+          switch (messageType) {
+            case messageSync:
+              const encoder = encoding.createEncoder()
+              encoding.writeVarUint(encoder, messageSync)
+              const syncMessageType = syncProtocol.readSyncMessage(decoder, encoder, ydoc, null)
+              if (encoding.length(encoder) > 1) {
+                websocket.send(encoding.toUint8Array(encoder))
+              }
+              if (syncMessageType === syncProtocol.messageYjsSyncStep2 && !yjsSynced) {
+                yjsSynced = true
+                console.log('[Yjs] Initial sync complete')
+              }
+              break
+            case messageAwareness:
+              awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), null)
+              break
+          }
+        }
+      })
+
+      // Send local updates to server
+      ydoc.on('update', (update, origin) => {
+        if (origin !== 'remote' && websocket.readyState === WebSocket.OPEN) {
+          const encoder = encoding.createEncoder()
+          encoding.writeVarUint(encoder, messageSync)
+          syncProtocol.writeUpdate(encoder, update)
+          websocket.send(encoding.toUint8Array(encoder))
+        }
+      })
+
+      // Send awareness updates
+      awareness.on('update', ({ added, updated, removed }) => {
+        const changedClients = added.concat(updated).concat(removed)
+        if (websocket.readyState === WebSocket.OPEN) {
+          const encoder = encoding.createEncoder()
+          encoding.writeVarUint(encoder, messageAwareness)
+          encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients))
+          websocket.send(encoding.toUint8Array(encoder))
+        }
+      })
+    }
 
     // Global state
     let ws = null
@@ -434,8 +544,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       dc.onopen = () => {
         dataChannels.set(peerId, dc)
         onPeerCountChange()
-        // Request sync from peer when channel opens
-        dc.send(JSON.stringify({ type: 'sync-request', from: myPeerId }))
+        // NOTE: Stroke sync is now handled by Yjs - WebRTC only used for low-latency cursor updates
       }
       dc.onclose = () => {
         dataChannels.delete(peerId)
@@ -550,6 +659,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       const [myDisplayPos, setMyDisplayPos] = useState({ x: 0, y: 0 })  // For UI display (throttled updates)
       const [drawDisabled, setDrawDisabled] = useState(false)
       const [disabledTimer, setDisabledTimer] = useState(0)
+      const [paintWarning, setPaintWarning] = useState(null)  // { color, key } for showing "out of paint" warning
       const enemies = useRef([])  // Array of {x, y, id} in world coordinates
       const ENEMY_SIZE = 25  // Enemy radius in world units
       const ENEMY_SPEED = 140  // Pixels per second in world units (faster!)
@@ -560,8 +670,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
       // Paint system - each color has limited paint that reloads
       const MAX_PAINT = 100
-      const PAINT_RELOAD_RATE = 8  // Units per second
-      const PAINT_USE_RATE = 0.5  // Per pixel drawn (adjusted by brush size)
+      const PAINT_RELOAD_RATE = 3  // Units per second (slower reload)
+      const PAINT_USE_RATE = 2.5  // Per screen pixel drawn (adjusted by brush size)
       const initPaintLevels = () => {
         const levels = {}
         COLORS.forEach(c => { levels[c] = MAX_PAINT })
@@ -584,7 +694,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       const activePointers = useRef(new Map())  // pointerId -> {x, y}
       const gestureState = useRef({ active: false, lastMid: null, lastDist: null })
       const currentPoints = useRef([])
-      const allStrokes = useRef([])  // Store all strokes for redraw
+      const allStrokes = useRef([])  // Synced from Yjs - do not modify directly!
+      const [strokesVersion, setStrokesVersion] = useState(0)  // Trigger re-render when strokes change
       const currentColorRef = useRef(currentColor)  // For renderCanvas access
       const isEraserRef = useRef(isEraser)
       const brushSizeRef = useRef(brushSize)
@@ -598,6 +709,28 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         return () => {
           window.removeEventListener('online', handleOnline)
           window.removeEventListener('offline', handleOffline)
+        }
+      }, [])
+
+      // ========================================
+      // YJS STROKES SYNC
+      // ========================================
+      // Observe Yjs strokes array and sync to local ref
+      useEffect(() => {
+        // Initial sync
+        allStrokes.current = yStrokes.toArray()
+        setStrokesVersion(v => v + 1)
+
+        // Observe changes
+        const observer = (event) => {
+          allStrokes.current = yStrokes.toArray()
+          setStrokesVersion(v => v + 1)
+          renderCanvas()
+        }
+        yStrokes.observe(observer)
+
+        return () => {
+          yStrokes.unobserve(observer)
         }
       }, [])
 
@@ -1194,6 +1327,13 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         return () => clearInterval(interval)
       }, [drawDisabled])
 
+      // Clear paint warning after animation
+      useEffect(() => {
+        if (!paintWarning) return
+        const timeout = setTimeout(() => setPaintWarning(null), 1500)
+        return () => clearTimeout(timeout)
+      }, [paintWarning])
+
       // Spawn paint pickups periodically
       useEffect(() => {
         const spawnPickup = () => {
@@ -1283,28 +1423,20 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       }, [])
 
       const broadcastStroke = useCallback((stroke) => {
-        const msg = JSON.stringify({ type: 'stroke', ...stroke, from: myPeerId })
-        // Send via WebSocket
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'stroke', ...stroke }))
-        }
-        // Send via WebRTC data channels
-        dataChannels.forEach((dc) => {
-          if (dc.readyState === 'open') {
-            try { dc.send(msg) } catch {}
-          }
-        })
+        // Add stroke to Yjs shared array - automatically syncs to all clients
+        yStrokes.push([{
+          points: stroke.points,
+          color: stroke.color,
+          size: stroke.size,
+          timestamp: Date.now(),
+          peerId: myPeerId
+        }])
       }, [])
 
       const broadcastClear = useCallback(() => {
-        const msg = JSON.stringify({ type: 'clear', from: myPeerId })
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'clear' }))
-        }
-        dataChannels.forEach((dc) => {
-          if (dc.readyState === 'open') {
-            try { dc.send(msg) } catch {}
-          }
+        // Clear strokes in Yjs - automatically syncs to all clients
+        ydoc.transact(() => {
+          yStrokes.delete(0, yStrokes.length)
         })
       }, [])
 
@@ -1333,35 +1465,28 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       }, [])
 
       // Handle incoming messages (from WS or WebRTC)
+      // NOTE: Strokes and clear are now synced via Yjs - no need to handle here
       const handleMessage = useCallback((data) => {
         // Handle signaling messages
         if (handleSignaling(data)) return
 
-        if (data.type === 'stroke' && data.from !== myPeerId) {
-          allStrokes.current.push({ points: data.points, color: data.color, size: data.size })
-          renderCanvas()
-        }
-        if (data.type === 'clear' && data.from !== myPeerId) {
-          clearCanvas()
-          renderCanvas()
-        }
+        // User count updates from server
         if (data.type === 'userCount') {
           setUserCount(data.count)
         }
-        if (data.type === 'sync-request') {
-          // Send all strokes to requesting peer
-          const syncData = JSON.stringify({ type: 'sync', strokes: allStrokes.current, from: myPeerId })
-          dataChannels.forEach((dc) => {
-            if (dc.readyState === 'open') {
-              try { dc.send(syncData) } catch {}
-            }
+        // Peer join/leave notifications
+        if (data.type === 'peer-joined' && data.peerId !== myPeerId) {
+          console.log('[Peer] Joined:', data.peerId)
+        }
+        if (data.type === 'peer-left') {
+          setRemoteCursors(prev => {
+            const next = new Map(prev)
+            next.delete(data.peerId)
+            return next
           })
+          gameStore.removeRemotePlayer(data.peerId)
         }
-        if (data.type === 'sync') {
-          // Receive full canvas state from server
-          allStrokes.current = data.strokes || []
-          renderCanvas()
-        }
+        // Cursor updates (still via WebRTC for low latency)
         if (data.type === 'cursor' && data.from !== myPeerId) {
           setRemoteCursors(prev => {
             const next = new Map(prev)
@@ -1375,7 +1500,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             color: getPeerColor(data.from)
           })
         }
-      }, [renderCanvas, clearCanvas])
+      }, [renderCanvas])
 
       // Store handleMessage in ref to avoid reconnection on change
       const handleMessageRef = useRef(handleMessage)
@@ -1405,16 +1530,26 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           if (!navigator.onLine) return
           const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
           ws = new WebSocket(protocol + '//' + location.host + '/room/' + ROOM_ID + '/ws?peerId=' + myPeerId)
+          ws.binaryType = 'arraybuffer'  // Required for Yjs sync messages
 
-          ws.onopen = () => setConnected(true)
+          ws.onopen = () => {
+            setConnected(true)
+            // Initialize Yjs sync over WebSocket
+            setupYjsSync(ws)
+          }
           ws.onclose = () => {
             setConnected(false)
+            yjsSynced = false  // Reset Yjs sync state
             // Cleanup all peer connections
             peers.forEach((pc, id) => cleanupPeer(id))
             if (navigator.onLine) setTimeout(connect, 2000)
           }
           ws.onerror = () => ws.close()
           ws.onmessage = (e) => {
+            // Binary messages are Yjs sync - handled by setupYjsSync
+            if (e.data instanceof ArrayBuffer) return
+
+            // String messages are game/signaling messages
             try {
               handleMessageRef.current(JSON.parse(e.data))
             } catch {}
@@ -1478,7 +1613,11 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
         // Check if we have paint for this color (eraser always works)
         const erasing = e.button === 2 || isEraser
-        if (!erasing && paintLevelsRef.current[currentColor] <= 0) return
+        if (!erasing && paintLevelsRef.current[currentColor] <= 0) {
+          // Show warning that paint is empty
+          setPaintWarning({ color: currentColor, key: Date.now() })
+          return
+        }
 
         // Single pointer = draw
         isDrawing.current = true
@@ -1528,14 +1667,17 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         // Check if we have paint (eraser doesn't use paint)
         if (!erasing && paintLevelsRef.current[currentColor] <= 0) {
           isDrawing.current = false
+          setPaintWarning({ color: currentColor, key: Date.now() })
           return
         }
 
-        // Deplete paint based on distance drawn
+        // Deplete paint based on screen distance drawn (consistent regardless of zoom)
         if (!erasing && currentPoints.current.length > 0) {
           const lastPoint = currentPoints.current[currentPoints.current.length - 1]
-          const dist = Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y)
-          const paintUsed = dist * PAINT_USE_RATE * (brushSize / 10)
+          const worldDist = Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y)
+          // Convert to screen distance by multiplying by zoom
+          const screenDist = worldDist * view.zoom
+          const paintUsed = screenDist * PAINT_USE_RATE * (brushSize / 10)
           setPaintLevels(prev => ({
             ...prev,
             [currentColor]: Math.max(0, prev[currentColor] - paintUsed)
@@ -1547,7 +1689,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         if (currentPoints.current.length >= 2) {
           drawStrokeWorld(currentPoints.current.slice(-2), color, brushSize)
         }
-      }, [getWorldCoords, broadcastCursor, currentColor, brushSize, isEraser, tempEraser, drawStrokeWorld])
+      }, [getWorldCoords, broadcastCursor, currentColor, brushSize, isEraser, tempEraser, drawStrokeWorld, view.zoom])
 
       const handlePointerUp = useCallback((e) => {
         e.preventDefault()
@@ -1866,6 +2008,11 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
                 <span class="disabled-timer">\${disabledTimer}s</span>
               </div>
             \`}
+            \${paintWarning && html\`
+              <div class="paint-warning" key=\${paintWarning.key}>
+                OUT OF PAINT!
+              </div>
+            \`}
           </div>
 
           <div class="toolbar">
@@ -1874,9 +2021,10 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
               const paintLevel = paintLevels[c] || 0
               const fillPercent = (paintLevel / MAX_PAINT) * 100
               const isEmpty = paintLevel <= 0
-              const cls = 'paint-bucket' + (active ? ' active' : '') + (isEmpty ? ' empty' : '')
+              const isShaking = paintWarning && paintWarning.color === c
+              const cls = 'paint-bucket' + (active ? ' active' : '') + (isEmpty ? ' empty' : '') + (isShaking ? ' shake' : '')
               return html\`
-                <div class=\${cls} onClick=\${() => { if (!isEmpty) { setCurrentColor(c); setIsEraser(false) } }}>
+                <div class=\${cls} key=\${c + (isShaking ? paintWarning.key : '')} onClick=\${() => { if (!isEmpty) { setCurrentColor(c); setIsEraser(false) } }}>
                   <div class="bucket-handle" style="border-color:\${c}" />
                   <div class="bucket-rim" style="background:\${c}" />
                   <div class="bucket-body" style="background:rgba(0,0,0,0.2)">
