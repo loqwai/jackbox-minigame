@@ -107,6 +107,44 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     }
     .size-dot { background: #fff; border-radius: 50% }
     .zoom-display { color: #888; font-size: 11px; min-width: 40px; text-align: center }
+    .coords-display {
+      position: absolute; bottom: 160px; left: 12px;
+      background: rgba(22, 33, 62, 0.85);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px; padding: 8px 12px;
+      color: #fff; font-size: 11px; font-family: monospace;
+      z-index: 20; min-width: 120px
+    }
+    .coords-label { opacity: 0.6; margin-right: 4px }
+    .coords-value { color: #2ecc71 }
+    .player-list {
+      position: absolute; top: 60px; right: 12px;
+      background: rgba(22, 33, 62, 0.9);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px; padding: 8px;
+      color: #fff; font-size: 12px; z-index: 20;
+      max-height: 200px; overflow-y: auto; min-width: 140px
+    }
+    .player-list-title {
+      font-weight: bold; margin-bottom: 6px; opacity: 0.8;
+      border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 4px
+    }
+    .player-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 0; gap: 8px
+    }
+    .player-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      border: 1.5px solid rgba(255,255,255,0.5); flex-shrink: 0
+    }
+    .player-name { flex: 1; overflow: hidden; text-overflow: ellipsis }
+    .player-coords { font-size: 10px; opacity: 0.6; font-family: monospace }
+    .goto-btn {
+      background: #0f3460; border: none; color: #fff;
+      padding: 2px 6px; border-radius: 4px; font-size: 10px;
+      cursor: pointer; flex-shrink: 0
+    }
+    .goto-btn:hover { background: #e94560 }
     .offline-badge {
       background: #f39c12; color: #000; padding: 2px 6px;
       border-radius: 4px; font-size: 10px; font-weight: bold
@@ -145,7 +183,6 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       border: 2px solid rgba(255, 255, 255, 0.3);
       border-radius: 8px;
       overflow: hidden;
-      pointer-events: none;
       z-index: 20
     }
     .minimap-inner {
@@ -161,12 +198,20 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       position: absolute; width: 8px; height: 8px;
       border-radius: 50%; transform: translate(-50%, -50%);
       border: 1.5px solid rgba(0, 0, 0, 0.5);
-      box-shadow: 0 0 4px rgba(0, 0, 0, 0.3)
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+      pointer-events: none
     }
     .minimap-cursor.self {
       width: 10px; height: 10px;
       border: 2px solid #fff;
       box-shadow: 0 0 6px rgba(255, 255, 255, 0.5)
+    }
+    .minimap-cursor.clickable {
+      pointer-events: auto; cursor: pointer
+    }
+    .minimap-cursor.clickable:hover {
+      transform: translate(-50%, -50%) scale(1.5);
+      box-shadow: 0 0 8px rgba(255, 255, 255, 0.8)
     }
     .minimap-arrow {
       position: absolute; width: 0; height: 0;
@@ -219,6 +264,116 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     let onPeerCountChange = () => {}
     let onMessage = (data) => {}
     let onCursorUpdate = (peerId, cursor) => {}
+
+    // ========================================
+    // CENTRALIZED GAME STATE STORE
+    // ========================================
+    // Single source of truth for all game state
+    // This helps fix bugs by ensuring state consistency
+    const createGameStore = () => {
+      const listeners = new Set()
+
+      const state = {
+        // View/camera state
+        view: { zoom: 1, panX: 0, panY: 0 },
+
+        // Player positions
+        myPosition: { x: 0, y: 0 },
+        remotePlayers: new Map(),  // peerId -> { x, y, color, lastSeen }
+
+        // Game objects (stored as refs for performance, but accessed through store)
+        strokes: [],
+        enemies: [],
+        pickups: [],
+
+        // UI state
+        currentColor: '#000000',
+        brushSize: 5,
+        isEraser: false,
+        drawDisabled: false,
+        disabledTimer: 0,
+
+        // Connection state
+        connected: false,
+        peerCount: 0,
+        userCount: 0,
+      }
+
+      const notify = () => listeners.forEach(fn => fn(state))
+
+      return {
+        getState: () => state,
+        subscribe: (fn) => {
+          listeners.add(fn)
+          return () => listeners.delete(fn)
+        },
+
+        // View actions
+        setView: (view) => {
+          state.view = typeof view === 'function' ? view(state.view) : view
+          notify()
+        },
+
+        // Navigate to a specific world position (centers view on that point)
+        goToPosition: (worldX, worldY, containerWidth, containerHeight) => {
+          state.view = {
+            ...state.view,
+            panX: containerWidth / 2 - worldX * state.view.zoom,
+            panY: containerHeight / 2 - worldY * state.view.zoom
+          }
+          notify()
+        },
+
+        // Navigate to another player's position
+        goToPlayer: (peerId, containerWidth, containerHeight) => {
+          const player = state.remotePlayers.get(peerId)
+          if (player) {
+            state.view = {
+              ...state.view,
+              panX: containerWidth / 2 - player.x * state.view.zoom,
+              panY: containerHeight / 2 - player.y * state.view.zoom
+            }
+            notify()
+          }
+        },
+
+        // Player position actions
+        setMyPosition: (x, y) => {
+          state.myPosition = { x, y }
+          // Don't notify for every cursor move (too frequent)
+        },
+
+        updateRemotePlayer: (peerId, data) => {
+          const existing = state.remotePlayers.get(peerId) || {}
+          state.remotePlayers.set(peerId, {
+            ...existing,
+            ...data,
+            lastSeen: Date.now()
+          })
+          notify()
+        },
+
+        removeRemotePlayer: (peerId) => {
+          state.remotePlayers.delete(peerId)
+          notify()
+        },
+
+        // Connection actions
+        setConnected: (connected) => { state.connected = connected; notify() },
+        setPeerCount: (count) => { state.peerCount = count; notify() },
+        setUserCount: (count) => { state.userCount = count; notify() },
+
+        // Draw state actions
+        setCurrentColor: (color) => { state.currentColor = color; notify() },
+        setBrushSize: (size) => { state.brushSize = size; notify() },
+        setIsEraser: (isEraser) => { state.isEraser = isEraser; notify() },
+        setDrawDisabled: (disabled) => { state.drawDisabled = disabled; notify() },
+        setDisabledTimer: (timer) => { state.disabledTimer = timer; notify() },
+      }
+    }
+
+    // Global store instance
+    const gameStore = createGameStore()
 
     // Assign colors to peers for visual distinction
     const CURSOR_COLORS = ['#e94560', '#f39c12', '#2ecc71', '#3498db', '#9b59b6', '#1abc9c', '#e74c3c', '#00cec9']
@@ -390,7 +545,9 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       const [localIp, setLocalIp] = useState(null)
       const [qrSvg, setQrSvg] = useState(null)
       const [remoteCursors, setRemoteCursors] = useState(new Map())  // peerId -> {x, y}
+      const remoteCursorsRef = useRef(new Map())  // For renderCanvas access
       const myCursor = useRef({ x: 0, y: 0 })  // My cursor in world coordinates
+      const [myDisplayPos, setMyDisplayPos] = useState({ x: 0, y: 0 })  // For UI display (throttled updates)
       const [drawDisabled, setDrawDisabled] = useState(false)
       const [disabledTimer, setDisabledTimer] = useState(0)
       const enemies = useRef([])  // Array of {x, y, id} in world coordinates
@@ -452,6 +609,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       useEffect(() => { currentColorRef.current = currentColor }, [currentColor])
       useEffect(() => { isEraserRef.current = isEraser }, [isEraser])
       useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
+      useEffect(() => { remoteCursorsRef.current = remoteCursors }, [remoteCursors])
 
       // Helper to lighten/darken colors for gradients
       const adjustColor = (hex, percent) => {
@@ -597,6 +755,86 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           ctx.arc(pickup.x - scaledPickupSize * 0.3, pickup.y - scaledPickupSize * 0.3,
             scaledPickupSize * 0.15, 0, Math.PI * 2)
           ctx.fill()
+        })
+
+        // Draw remote player cursors (other players' squids)
+        remoteCursorsRef.current.forEach((cursor, peerId) => {
+          const remoteX = cursor.x
+          const remoteY = cursor.y
+          const remoteSize = 18 / v.zoom  // Slightly smaller than self
+          const remoteColor = getPeerColor(peerId)
+
+          // Remote squid body
+          const remoteGradient = ctx.createRadialGradient(
+            remoteX, remoteY - remoteSize * 0.2, 0,
+            remoteX, remoteY, remoteSize * 1.2
+          )
+          remoteGradient.addColorStop(0, adjustColor(remoteColor, 50))
+          remoteGradient.addColorStop(0.6, remoteColor)
+          remoteGradient.addColorStop(1, adjustColor(remoteColor, -40))
+
+          ctx.fillStyle = remoteGradient
+          ctx.beginPath()
+          ctx.ellipse(remoteX, remoteY, remoteSize * 0.9, remoteSize * 1.1, 0, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Remote tentacles
+          for (let i = 0; i < 6; i++) {
+            const angle = (Math.PI * 0.3) + (i / 5) * (Math.PI * 0.4)
+            const wobble = Math.sin(Date.now() / 150 + i + peerId.charCodeAt(0)) * remoteSize * 0.15
+            const tentacleLen = remoteSize * 0.8
+
+            const startX = remoteX + Math.cos(angle + Math.PI * 0.5) * remoteSize * 0.5
+            const startY = remoteY + remoteSize * 0.7
+            const endX = startX + Math.cos(angle + Math.PI * 0.5) * tentacleLen + wobble
+            const endY = startY + Math.sin(Math.PI * 0.5) * tentacleLen
+
+            ctx.strokeStyle = remoteColor
+            ctx.lineWidth = remoteSize * 0.15
+            ctx.lineCap = 'round'
+            ctx.beginPath()
+            ctx.moveTo(startX, startY)
+            ctx.quadraticCurveTo(startX + wobble * 0.5, startY + tentacleLen * 0.5, endX, endY)
+            ctx.stroke()
+          }
+
+          // Remote eyes
+          const rEyeOffsetX = remoteSize * 0.3
+          const rEyeOffsetY = -remoteSize * 0.1
+          const rEyeSize = remoteSize * 0.35
+
+          ctx.fillStyle = '#fff'
+          ctx.beginPath()
+          ctx.ellipse(remoteX - rEyeOffsetX, remoteY + rEyeOffsetY, rEyeSize, rEyeSize * 1.2, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.ellipse(remoteX + rEyeOffsetX, remoteY + rEyeOffsetY, rEyeSize, rEyeSize * 1.2, 0, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Remote pupils (look toward center of screen roughly)
+          const rPupilSize = rEyeSize * 0.5
+          ctx.fillStyle = '#000'
+          ctx.beginPath()
+          ctx.arc(remoteX - rEyeOffsetX, remoteY + rEyeOffsetY, rPupilSize, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(remoteX + rEyeOffsetX, remoteY + rEyeOffsetY, rPupilSize, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Remote squid top
+          ctx.fillStyle = remoteColor
+          ctx.beginPath()
+          ctx.moveTo(remoteX, remoteY - remoteSize * 1.4)
+          ctx.lineTo(remoteX - remoteSize * 0.3, remoteY - remoteSize * 0.5)
+          ctx.lineTo(remoteX + remoteSize * 0.3, remoteY - remoteSize * 0.5)
+          ctx.closePath()
+          ctx.fill()
+
+          // Player ID label above squid
+          ctx.fillStyle = 'rgba(0,0,0,0.6)'
+          ctx.font = (12 / v.zoom) + 'px sans-serif'
+          ctx.textAlign = 'center'
+          ctx.fillText('P-' + peerId.slice(0, 4), remoteX, remoteY - remoteSize * 2)
         })
 
         // Draw Splatoon-inspired player character (squid kid)
@@ -1072,12 +1310,20 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
       // Throttled cursor broadcast (max 20 updates per second)
       const lastCursorBroadcast = useRef(0)
+      const lastDisplayUpdate = useRef(0)
       const broadcastCursor = useCallback((worldX, worldY) => {
         const now = Date.now()
-        if (now - lastCursorBroadcast.current < 50) return  // Throttle to 20fps
+        myCursor.current = { x: worldX, y: worldY }
+
+        // Update display position (throttled separately for smoother UI)
+        if (now - lastDisplayUpdate.current > 100) {  // 10fps for display
+          lastDisplayUpdate.current = now
+          setMyDisplayPos({ x: worldX, y: worldY })
+        }
+
+        if (now - lastCursorBroadcast.current < 50) return  // Throttle broadcasts to 20fps
         lastCursorBroadcast.current = now
 
-        myCursor.current = { x: worldX, y: worldY }
         const msg = JSON.stringify({ type: 'cursor', x: worldX, y: worldY, from: myPeerId })
         dataChannels.forEach((dc) => {
           if (dc.readyState === 'open') {
@@ -1122,6 +1368,12 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             next.set(data.from, { x: data.x, y: data.y })
             return next
           })
+          // Also update centralized store with color
+          gameStore.updateRemotePlayer(data.from, {
+            x: data.x,
+            y: data.y,
+            color: getPeerColor(data.from)
+          })
         }
       }, [renderCanvas, clearCanvas])
 
@@ -1138,6 +1390,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             const next = new Map(prev)
             if (cursor === null) {
               next.delete(peerId)
+              gameStore.removeRemotePlayer(peerId)  // Also remove from centralized store
             } else {
               next.set(peerId, cursor)
             }
@@ -1387,6 +1640,30 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         })
       }
 
+      // Navigate to a player's position
+      const goToPlayer = useCallback((peerId) => {
+        const cursor = remoteCursors.get(peerId)
+        if (!cursor || !containerRef.current) return
+        const rect = containerRef.current.getBoundingClientRect()
+        // Center view on the player's world position
+        setView(v => ({
+          ...v,
+          panX: rect.width / 2 - cursor.x * v.zoom,
+          panY: rect.height / 2 - cursor.y * v.zoom
+        }))
+      }, [remoteCursors])
+
+      // Navigate to specific world coordinates
+      const goToCoords = useCallback((worldX, worldY) => {
+        if (!containerRef.current) return
+        const rect = containerRef.current.getBoundingClientRect()
+        setView(v => ({
+          ...v,
+          panX: rect.width / 2 - worldX * v.zoom,
+          panY: rect.height / 2 - worldY * v.zoom
+        }))
+      }, [])
+
       const showHostQr = async () => {
         setShowHost(true)
         const ip = await getLocalIp()
@@ -1476,14 +1753,16 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             x: pos.x,
             y: pos.y,
             color,
-            isSelf: false
+            isSelf: false,
+            peerId  // Include peerId for click handling
           })
         } else {
-          // Show arrow for off-screen player
+          // Show arrow for off-screen player (also clickable)
           const arrow = getArrowIndicator(cursor.x, cursor.y, color)
           minimapElements.push({
             type: 'arrow',
-            ...arrow
+            ...arrow,
+            peerId  // Include peerId for click handling
           })
         }
       })
@@ -1535,12 +1814,15 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
               <div class="minimap-inner">
                 \${minimapElements.map((el, i) => {
                   if (el.type === 'cursor') {
-                    const cls = 'minimap-cursor' + (el.isSelf ? ' self' : '')
+                    const cls = 'minimap-cursor' + (el.isSelf ? ' self' : ' clickable')
                     const style = 'left:' + el.x + 'px;top:' + el.y + 'px;background:' + el.color
-                    return html\`<div key=\${i} class=\${cls} style=\${style} />\`
+                    if (el.isSelf) {
+                      return html\`<div key=\${i} class=\${cls} style=\${style} />\`
+                    }
+                    return html\`<div key=\${i} class=\${cls} style=\${style} onClick=\${() => goToPlayer(el.peerId)} title="Click to go to player" />\`
                   } else if (el.type === 'arrow') {
-                    const style = 'left:' + el.x + 'px;top:' + el.y + 'px;border-bottom-color:' + el.color + ';transform:translate(-50%,-50%) rotate(' + el.rotation + 'deg)'
-                    return html\`<div key=\${i} class="minimap-arrow" style=\${style} />\`
+                    const style = 'left:' + el.x + 'px;top:' + el.y + 'px;border-bottom-color:' + el.color + ';transform:translate(-50%,-50%) rotate(' + el.rotation + 'deg);cursor:pointer'
+                    return html\`<div key=\${i} class="minimap-arrow" style=\${style} onClick=\${() => goToPlayer(el.peerId)} title="Click to go to player" />\`
                   } else if (el.type === 'enemy') {
                     const style = 'left:' + el.x + 'px;top:' + el.y + 'px;background:#e94560;width:6px;height:6px'
                     return html\`<div key=\${i} class="minimap-cursor" style=\${style} />\`
@@ -1551,6 +1833,33 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
                 })}
               </div>
             </div>
+            <div class="coords-display">
+              <div><span class="coords-label">X:</span><span class="coords-value">\${Math.round(myDisplayPos.x)}</span></div>
+              <div><span class="coords-label">Y:</span><span class="coords-value">\${Math.round(myDisplayPos.y)}</span></div>
+              <div><span class="coords-label">Zoom:</span><span class="coords-value">\${Math.round(view.zoom * 100)}%</span></div>
+            </div>
+            \${remoteCursors.size > 0 && html\`
+              <div class="player-list">
+                <div class="player-list-title">Players (\${remoteCursors.size + 1})</div>
+                <div class="player-item">
+                  <div class="player-dot" style="background:\${selfColor}" />
+                  <div class="player-name">You</div>
+                  <div class="player-coords">\${Math.round(myDisplayPos.x)}, \${Math.round(myDisplayPos.y)}</div>
+                </div>
+                \${Array.from(remoteCursors.entries()).map(([peerId, cursor]) => {
+                  const color = getPeerColor(peerId)
+                  const shortId = peerId.slice(0, 4)
+                  return html\`
+                    <div class="player-item" key=\${peerId}>
+                      <div class="player-dot" style="background:\${color}" />
+                      <div class="player-name">P-\${shortId}</div>
+                      <div class="player-coords">\${Math.round(cursor.x)}, \${Math.round(cursor.y)}</div>
+                      <button class="goto-btn" onClick=\${() => goToPlayer(peerId)}>Go</button>
+                    </div>
+                  \`
+                })}
+              </div>
+            \`}
             \${drawDisabled && html\`
               <div class="disabled-overlay">
                 DRAWING DISABLED
