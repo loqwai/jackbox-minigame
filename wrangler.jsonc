@@ -3,9 +3,11 @@
   "name": "jackbox-drawing",
   "main": "src/index.ts",
   "compatibility_date": "2024-12-01",
+  "preview_urls": true,
 
   "routes": [
-    { "pattern": "draw.hypnodroid.com", "custom_domain": true }
+    { "pattern": "draw.hypnodroid.com", "custom_domain": true },
+    { "pattern": "*.draw.hypnodroid.com", "zone_name": "hypnodroid.com" }
   ],
 
   "assets": {
