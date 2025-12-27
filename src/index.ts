@@ -5,10 +5,10 @@ import { presentHtml } from "./client/present"
 import { manifestJson } from "./client/manifest"
 import { serviceWorkerJs } from "./client/sw"
 
+// DrawingRoom exported for wrangler.toml compatibility (deprecated, will be removed)
 export { DrawingRoom, YDrawingRoom }
 
 interface Env {
-  DRAWING_ROOM: DurableObjectNamespace<DrawingRoom>
   Y_DRAWING_ROOM: DurableObjectNamespace<YDrawingRoom>
 }
 
@@ -44,11 +44,7 @@ export default {
       const id = env.Y_DRAWING_ROOM.idFromName(roomId)
       return env.Y_DRAWING_ROOM.get(id).fetch(request)
     }
-
-    if (subPath === "/ws-legacy") {
-      const id = env.DRAWING_ROOM.idFromName(roomId)
-      return env.DRAWING_ROOM.get(id).fetch(request)
-    }
+    // Legacy /ws-legacy route removed - all sync now via Yjs
 
     if (subPath === "/present") return html(presentHtml(roomId))
     if (subPath === "" || subPath === "/") return html(drawHtml(roomId))

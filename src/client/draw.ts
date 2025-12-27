@@ -301,9 +301,19 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     const yStrokes = ydoc.getArray('strokes')
     const yPlayers = ydoc.getMap('players')
     const yGameState = ydoc.getMap('gameState')
+    const yEnemies = ydoc.getArray('enemies')
+    const yPickups = ydoc.getArray('pickups')
 
     // Awareness for ephemeral state (cursors, presence)
     const awareness = new Awareness(ydoc)
+
+    // Host detection - lowest clientID is the host (controls enemies/pickups)
+    const isHost = () => {
+      const states = awareness.getStates()
+      if (states.size === 0) return true  // Only client = host
+      const clientIds = Array.from(states.keys())
+      return Math.min(...clientIds) === awareness.clientID
+    }
 
     // WebSocket provider for Yjs sync
     let yjsWs = null
@@ -318,6 +328,14 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       syncProtocol.writeSyncStep1(encoder, ydoc)
       websocket.send(encoding.toUint8Array(encoder))
 
+      // Fallback: consider synced after 500ms even if no response
+      const syncTimeout = setTimeout(() => {
+        if (!yjsSynced) {
+          yjsSynced = true
+          console.log('[Yjs] Sync timeout - assuming synced')
+        }
+      }, 500)
+
       // Handle incoming Yjs messages
       websocket.addEventListener('message', (event) => {
         if (event.data instanceof ArrayBuffer) {
@@ -328,12 +346,14 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             case messageSync:
               const encoder = encoding.createEncoder()
               encoding.writeVarUint(encoder, messageSync)
-              const syncMessageType = syncProtocol.readSyncMessage(decoder, encoder, ydoc, null)
+              syncProtocol.readSyncMessage(decoder, encoder, ydoc, null)
               if (encoding.length(encoder) > 1) {
                 websocket.send(encoding.toUint8Array(encoder))
               }
-              if (syncMessageType === syncProtocol.messageYjsSyncStep2 && !yjsSynced) {
+              // Consider synced after receiving ANY sync message
+              if (!yjsSynced) {
                 yjsSynced = true
+                clearTimeout(syncTimeout)
                 console.log('[Yjs] Initial sync complete')
               }
               break
@@ -373,7 +393,6 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
     let myPeerId = Math.random().toString(36).substr(2, 9)
     let onPeerCountChange = () => {}
     let onMessage = (data) => {}
-    let onCursorUpdate = (peerId, cursor) => {}
 
     // ========================================
     // CENTRALIZED GAME STATE STORE
@@ -579,7 +598,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
       if (data.type === 'peer-left') {
         cleanupPeer(data.peerId)
-        onCursorUpdate(data.peerId, null)  // Remove cursor
+        // Note: cursor cleanup handled by Yjs Awareness automatically
         peerColors.delete(data.peerId)
         return true
       }
@@ -732,6 +751,79 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         return () => {
           yStrokes.unobserve(observer)
         }
+      }, [])
+
+      // ========================================
+      // YJS AWARENESS - CURSOR SYNC
+      // ========================================
+      // Observe Yjs Awareness for remote cursor updates
+      useEffect(() => {
+        const handleAwarenessChange = ({ added, updated, removed }) => {
+          const states = awareness.getStates()
+          setRemoteCursors(prev => {
+            const next = new Map(prev)
+            // Handle removed clients
+            removed.forEach(clientId => {
+              // Find peerId for this clientId
+              for (const [peerId, cursor] of next) {
+                if (cursor.clientId === clientId) {
+                  next.delete(peerId)
+                  gameStore.removeRemotePlayer(peerId)
+                  break
+                }
+              }
+            })
+            // Handle added/updated clients
+            ;[...added, ...updated].forEach(clientId => {
+              if (clientId === awareness.clientID) return  // Skip self
+              const state = states.get(clientId)
+              if (!state?.cursor) return
+              const peerId = state.peerId || String(clientId)
+              next.set(peerId, { x: state.cursor.x, y: state.cursor.y, clientId, color: state.cursor.color })
+              gameStore.updateRemotePlayer(peerId, { x: state.cursor.x, y: state.cursor.y, color: state.cursor.color || getPeerColor(peerId) })
+            })
+            return next
+          })
+        }
+        awareness.on('change', handleAwarenessChange)
+
+        // Set our peerId in awareness so others can identify us
+        awareness.setLocalStateField('peerId', myPeerId)
+
+        return () => {
+          awareness.off('change', handleAwarenessChange)
+        }
+      }, [])
+
+      // ========================================
+      // YJS GAME STATE - ENEMY/PICKUP SYNC
+      // ========================================
+      // Observe yEnemies - all clients read from Yjs, only host writes to it
+      useEffect(() => {
+        const observer = (event, transaction) => {
+          // Skip updates that originated from this client (host's own writes)
+          if (transaction.local) return
+          enemies.current = yEnemies.toArray()
+        }
+        yEnemies.observe(observer)
+        // Initial sync from Yjs
+        if (yEnemies.length > 0) {
+          enemies.current = yEnemies.toArray()
+        }
+        return () => yEnemies.unobserve(observer)
+      }, [])
+
+      // Observe yPickups for pickup sync
+      useEffect(() => {
+        const observer = () => {
+          pickups.current = yPickups.toArray()
+        }
+        yPickups.observe(observer)
+        // Initial sync
+        if (yPickups.length > 0) {
+          pickups.current = yPickups.toArray()
+        }
+        return () => yPickups.unobserve(observer)
       }, [])
 
       // Store view in ref for render function
@@ -1142,8 +1234,9 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         return false
       }, [])
 
-      // Spawn enemies at random positions around the player
+      // Spawn enemies at random positions around the player (host only)
       const spawnEnemies = useCallback(() => {
+        if (!isHost()) return  // Only host spawns enemies
         const newEnemies = []
         for (let i = 0; i < ENEMY_COUNT; i++) {
           const angle = Math.random() * Math.PI * 2
@@ -1161,115 +1254,136 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           newEnemies.push({ x, y, id: i })
         }
         enemies.current = newEnemies
+        // Sync to Yjs
+        ydoc.transact(() => {
+          yEnemies.delete(0, yEnemies.length)
+          yEnemies.push(newEnemies)
+        })
       }, [collidesWithStroke])
 
       // Game loop - enemy movement and collision detection
       useEffect(() => {
         let lastTime = performance.now()
         let animationId = null
-        let spawned = false
+        let lastEnemySync = 0
+        let spawning = false
 
         const gameLoop = (currentTime) => {
           const deltaTime = (currentTime - lastTime) / 1000  // Convert to seconds
           lastTime = currentTime
 
-          // Spawn enemies on first run
-          if (!spawned) {
+          // Spawn enemies if none exist and we're the host (after Yjs sync)
+          if (yjsSynced && !spawning && enemies.current.length === 0 && yEnemies.length === 0 && isHost()) {
+            spawning = true
             spawnEnemies()
-            spawned = true
           }
 
-          // Update each enemy
+          // Check player-enemy collision (all clients check locally)
           let playerHit = false
-          enemies.current = enemies.current.map(enemy => {
-            // Direction toward player
+          enemies.current.forEach(enemy => {
             const dx = myCursor.current.x - enemy.x
             const dy = myCursor.current.y - enemy.y
-            const dist = Math.hypot(dx, dy)
-
-            // Check if touching player (cursor)
-            if (dist < ENEMY_SIZE + 10) {  // 10 = cursor "hitbox"
+            if (Math.hypot(dx, dy) < ENEMY_SIZE + 10) {
               playerHit = true
             }
-
-            // Don't move if very close
-            if (dist < ENEMY_SIZE) {
-              return enemy
-            }
-
-            // Normalize direction
-            const dirX = dx / dist
-            const dirY = dy / dist
-
-            // Calculate new position
-            const moveSpeed = ENEMY_SPEED * deltaTime
-            let newX = enemy.x + dirX * moveSpeed
-            let newY = enemy.y + dirY * moveSpeed
-
-            // Check collision with strokes - improved pathfinding
-            if (collidesWithStroke(newX, newY, ENEMY_SIZE)) {
-              // Try moving only in X
-              if (!collidesWithStroke(newX, enemy.y, ENEMY_SIZE)) {
-                return { ...enemy, x: newX, wallFollowDir: enemy.wallFollowDir || 1 }
-              }
-              // Try moving only in Y
-              if (!collidesWithStroke(enemy.x, newY, ENEMY_SIZE)) {
-                return { ...enemy, y: newY, wallFollowDir: enemy.wallFollowDir || 1 }
-              }
-
-              // Wall following - try perpendicular directions
-              const perpDir = enemy.wallFollowDir || (Math.random() > 0.5 ? 1 : -1)
-              const perpX = -dirY * perpDir
-              const perpY = dirX * perpDir
-              const slideX = enemy.x + perpX * moveSpeed * 1.5
-              const slideY = enemy.y + perpY * moveSpeed * 1.5
-
-              if (!collidesWithStroke(slideX, slideY, ENEMY_SIZE)) {
-                return { ...enemy, x: slideX, y: slideY, wallFollowDir: perpDir }
-              }
-
-              // Try opposite perpendicular
-              const oppSlideX = enemy.x - perpX * moveSpeed * 1.5
-              const oppSlideY = enemy.y - perpY * moveSpeed * 1.5
-              if (!collidesWithStroke(oppSlideX, oppSlideY, ENEMY_SIZE)) {
-                return { ...enemy, x: oppSlideX, y: oppSlideY, wallFollowDir: -perpDir }
-              }
-
-              // Still stuck - try random direction
-              const randAngle = Math.random() * Math.PI * 2
-              const randX = enemy.x + Math.cos(randAngle) * moveSpeed
-              const randY = enemy.y + Math.sin(randAngle) * moveSpeed
-              if (!collidesWithStroke(randX, randY, ENEMY_SIZE)) {
-                return { ...enemy, x: randX, y: randY }
-              }
-
-              return enemy
-            }
-
-            // Clear wall follow direction when not blocked
-            return { ...enemy, x: newX, y: newY, wallFollowDir: null }
           })
+
+          // Host updates enemy positions (AI chases host's cursor)
+          if (isHost()) {
+            enemies.current = enemies.current.map(enemy => {
+              // Direction toward player
+              const dx = myCursor.current.x - enemy.x
+              const dy = myCursor.current.y - enemy.y
+              const dist = Math.hypot(dx, dy)
+
+              // Don't move if very close
+              if (dist < ENEMY_SIZE) return enemy
+
+              // Normalize direction
+              const dirX = dx / dist
+              const dirY = dy / dist
+
+              // Calculate new position
+              const moveSpeed = ENEMY_SPEED * deltaTime
+              let newX = enemy.x + dirX * moveSpeed
+              let newY = enemy.y + dirY * moveSpeed
+
+              // Check collision with strokes - improved pathfinding
+              if (collidesWithStroke(newX, newY, ENEMY_SIZE)) {
+                // Try moving only in X
+                if (!collidesWithStroke(newX, enemy.y, ENEMY_SIZE)) {
+                  return { ...enemy, x: newX, wallFollowDir: enemy.wallFollowDir || 1 }
+                }
+                // Try moving only in Y
+                if (!collidesWithStroke(enemy.x, newY, ENEMY_SIZE)) {
+                  return { ...enemy, y: newY, wallFollowDir: enemy.wallFollowDir || 1 }
+                }
+
+                // Wall following - try perpendicular directions
+                const perpDir = enemy.wallFollowDir || (Math.random() > 0.5 ? 1 : -1)
+                const perpX = -dirY * perpDir
+                const perpY = dirX * perpDir
+                const slideX = enemy.x + perpX * moveSpeed * 1.5
+                const slideY = enemy.y + perpY * moveSpeed * 1.5
+
+                if (!collidesWithStroke(slideX, slideY, ENEMY_SIZE)) {
+                  return { ...enemy, x: slideX, y: slideY, wallFollowDir: perpDir }
+                }
+
+                // Try opposite perpendicular
+                const oppSlideX = enemy.x - perpX * moveSpeed * 1.5
+                const oppSlideY = enemy.y - perpY * moveSpeed * 1.5
+                if (!collidesWithStroke(oppSlideX, oppSlideY, ENEMY_SIZE)) {
+                  return { ...enemy, x: oppSlideX, y: oppSlideY, wallFollowDir: -perpDir }
+                }
+
+                // Still stuck - try random direction
+                const randAngle = Math.random() * Math.PI * 2
+                const randX = enemy.x + Math.cos(randAngle) * moveSpeed
+                const randY = enemy.y + Math.sin(randAngle) * moveSpeed
+                if (!collidesWithStroke(randX, randY, ENEMY_SIZE)) {
+                  return { ...enemy, x: randX, y: randY }
+                }
+
+                return enemy
+              }
+
+              // Clear wall follow direction when not blocked
+              return { ...enemy, x: newX, y: newY, wallFollowDir: null }
+            })
+
+            // Sync enemy positions to Yjs (throttled to 10fps)
+            if (currentTime - lastEnemySync > 100) {
+              lastEnemySync = currentTime
+              ydoc.transact(() => {
+                yEnemies.delete(0, yEnemies.length)
+                yEnemies.push(enemies.current.map(e => ({ x: e.x, y: e.y, id: e.id })))
+              })
+            }
+          }
 
           // Disable drawing if player was hit
           if (playerHit && !drawDisabled) {
             setDrawDisabled(true)
             setDisabledTimer(DISABLE_DURATION)
 
-            // Respawn the enemy that hit the player far away
-            enemies.current = enemies.current.map(enemy => {
-              const dx = myCursor.current.x - enemy.x
-              const dy = myCursor.current.y - enemy.y
-              if (Math.hypot(dx, dy) < ENEMY_SIZE + 15) {
-                const angle = Math.random() * Math.PI * 2
-                const distance = 500 + Math.random() * 300
-                return {
-                  ...enemy,
-                  x: myCursor.current.x + Math.cos(angle) * distance,
-                  y: myCursor.current.y + Math.sin(angle) * distance
+            // Host respawns the enemy that hit them far away
+            if (isHost()) {
+              enemies.current = enemies.current.map(enemy => {
+                const dx = myCursor.current.x - enemy.x
+                const dy = myCursor.current.y - enemy.y
+                if (Math.hypot(dx, dy) < ENEMY_SIZE + 15) {
+                  const angle = Math.random() * Math.PI * 2
+                  const distance = 500 + Math.random() * 300
+                  return {
+                    ...enemy,
+                    x: myCursor.current.x + Math.cos(angle) * distance,
+                    y: myCursor.current.y + Math.sin(angle) * distance
+                  }
                 }
-              }
-              return enemy
-            })
+                return enemy
+              })
+            }
           }
 
           // Reload paint over time (all colors reload slowly)
@@ -1285,20 +1399,28 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
             return changed ? next : prev
           })
 
-          // Check pickup collision
-          pickups.current = pickups.current.filter(pickup => {
+          // Check pickup collision (any player can collect)
+          const collectedIds = []
+          pickups.current.forEach(pickup => {
             const dx = myCursor.current.x - pickup.x
             const dy = myCursor.current.y - pickup.y
             if (Math.hypot(dx, dy) < PICKUP_SIZE + 15) {
-              // Collected! Instantly refill that color
+              // Collected! Instantly refill that color for this player
               setPaintLevels(prev => ({
                 ...prev,
                 [pickup.color]: MAX_PAINT
               }))
-              return false  // Remove pickup
+              collectedIds.push(pickup.id)
             }
-            return true
           })
+          // Remove collected pickups from Yjs (syncs to all clients)
+          if (collectedIds.length > 0) {
+            ydoc.transact(() => {
+              const toKeep = yPickups.toArray().filter(p => !collectedIds.includes(p.id))
+              yPickups.delete(0, yPickups.length)
+              if (toKeep.length > 0) yPickups.push(toKeep)
+            })
+          }
 
           renderCanvas()
           animationId = requestAnimationFrame(gameLoop)
@@ -1334,10 +1456,15 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         return () => clearTimeout(timeout)
       }, [paintWarning])
 
-      // Spawn paint pickups periodically
+      // Spawn paint pickups periodically (host only)
       useEffect(() => {
+        let initialSpawned = false
+
         const spawnPickup = () => {
+          if (!yjsSynced) return  // Wait for sync
+          if (!isHost()) return  // Only host spawns pickups
           if (pickups.current.length >= MAX_PICKUPS) return
+          if (yPickups.length >= MAX_PICKUPS) return  // Check Yjs too
 
           // Spawn near player but not too close
           const angle = Math.random() * Math.PI * 2
@@ -1349,18 +1476,29 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           const colorOptions = COLORS.filter(c => c !== '#ffffff')
           const color = colorOptions[Math.floor(Math.random() * colorOptions.length)]
 
-          pickups.current.push({
-            x, y,
-            id: Date.now() + Math.random(),
-            color
-          })
+          const pickup = { x, y, id: Date.now() + Math.random(), color }
+          pickups.current.push(pickup)
+          // Sync to Yjs
+          yPickups.push([pickup])
         }
 
-        // Spawn initial pickups
-        for (let i = 0; i < 3; i++) spawnPickup()
+        const maybeSpawnInitial = () => {
+          if (initialSpawned) return
+          if (!yjsSynced) return
+          if (!isHost()) return
+          if (yPickups.length > 0) return  // Already have pickups
+          initialSpawned = true
+          for (let i = 0; i < 3; i++) spawnPickup()
+        }
 
-        const interval = setInterval(spawnPickup, PICKUP_SPAWN_INTERVAL)
-        return () => clearInterval(interval)
+        // Check periodically until initial spawn happens
+        const initInterval = setInterval(maybeSpawnInitial, 100)
+        const spawnInterval = setInterval(spawnPickup, PICKUP_SPAWN_INTERVAL)
+
+        return () => {
+          clearInterval(initInterval)
+          clearInterval(spawnInterval)
+        }
       }, [])
 
       // Enemy line breaking - 50% chance every 10 seconds to break nearby drawings
@@ -1430,8 +1568,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
 
       const clearCanvas = useCallback(() => {
         const ctx = ctxRef.current
-        if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
-        allStrokes.current = []
+        if (!ctx) return
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
       }, [])
 
       const broadcastStroke = useCallback((stroke) => {
@@ -1452,7 +1590,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         })
       }, [])
 
-      // Throttled cursor broadcast (max 20 updates per second)
+      // Throttled cursor broadcast via Yjs Awareness (max 20 updates per second)
       const lastCursorBroadcast = useRef(0)
       const lastDisplayUpdate = useRef(0)
       const broadcastCursor = useCallback((worldX, worldY) => {
@@ -1468,12 +1606,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         if (now - lastCursorBroadcast.current < 50) return  // Throttle broadcasts to 20fps
         lastCursorBroadcast.current = now
 
-        const msg = JSON.stringify({ type: 'cursor', x: worldX, y: worldY, from: myPeerId })
-        dataChannels.forEach((dc) => {
-          if (dc.readyState === 'open') {
-            try { dc.send(msg) } catch {}
-          }
-        })
+        // Broadcast cursor via Yjs Awareness - automatically syncs to all clients
+        awareness.setLocalStateField('cursor', { x: worldX, y: worldY, color: currentColorRef.current })
       }, [])
 
       // Handle incoming messages (from WS or WebRTC)
@@ -1491,27 +1625,10 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
           console.log('[Peer] Joined:', data.peerId)
         }
         if (data.type === 'peer-left') {
-          setRemoteCursors(prev => {
-            const next = new Map(prev)
-            next.delete(data.peerId)
-            return next
-          })
           gameStore.removeRemotePlayer(data.peerId)
+          // Note: cursor cleanup is handled by Awareness protocol automatically
         }
-        // Cursor updates (still via WebRTC for low latency)
-        if (data.type === 'cursor' && data.from !== myPeerId) {
-          setRemoteCursors(prev => {
-            const next = new Map(prev)
-            next.set(data.from, { x: data.x, y: data.y })
-            return next
-          })
-          // Also update centralized store with color
-          gameStore.updateRemotePlayer(data.from, {
-            x: data.x,
-            y: data.y,
-            color: getPeerColor(data.from)
-          })
-        }
+        // Cursor updates are now handled via Yjs Awareness - see YJS AWARENESS section
       }, [renderCanvas])
 
       // Store handleMessage in ref to avoid reconnection on change
@@ -1522,18 +1639,7 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       useEffect(() => {
         onPeerCountChange = () => setPeerCount(dataChannels.size)
         onMessage = (data) => handleMessageRef.current(data)
-        onCursorUpdate = (peerId, cursor) => {
-          setRemoteCursors(prev => {
-            const next = new Map(prev)
-            if (cursor === null) {
-              next.delete(peerId)
-              gameStore.removeRemotePlayer(peerId)  // Also remove from centralized store
-            } else {
-              next.set(peerId, cursor)
-            }
-            return next
-          })
-        }
+        // Note: onCursorUpdate removed - cursor sync now via Yjs Awareness
       }, [])
 
       // WebSocket connection (stable - only runs once)
