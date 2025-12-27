@@ -9,7 +9,7 @@ import { moveEnemy, spawnEnemy, checkPlayerCollision, respawnEnemyAwayFromPlayer
 import { checkPickupCollision, spawnPickup } from '../game/pickups.js'
 import { selectStrokesToBreak } from '../game/line-break.js'
 import { renderCanvas } from '../render/canvas.js'
-import { getWorldCoordsFromEvent, calculatePinchZoom } from '../input/pointer.js'
+import { getWorldCoordsFromEvent } from '../input/pointer.js'
 import { calculateWheelZoom, calculateButtonZoom, resetViewToOrigin } from '../input/wheel.js'
 import { createGestureState, resetGestureState, activateGesture, updateGesture } from '../input/gestures.js'
 import { getDistance, getMidpoint } from '../math/geometry.js'
@@ -54,7 +54,7 @@ export const App = ({ roomId, peerId }) => {
 
   // Game state
   const strokes = useRef([])
-  const [ setStrokesVersion] = useState(0)
+  const [, setStrokesVersion] = useState(0)
   const enemies = useRef([])
   const pickups = useRef([])
 
@@ -305,16 +305,28 @@ export const App = ({ roomId, peerId }) => {
     const pointers = Array.from(activePointers.current.values())
 
     if (pointers.length >= 2 && gestureState.current.active) {
-      const result = calculatePinchZoom(
-        pointers,
-        gestureState.current.lastMid,
-        gestureState.current.lastDist,
-        viewRef.current
-      )
-      if (result) {
-        setView(result.view)
-        gestureState.current = updateGesture(gestureState.current, result.mid, result.dist)
+      const mid = getMidpoint(pointers[0], pointers[1])
+      const dist = getDistance(pointers[0], pointers[1])
+      const lastMid = gestureState.current.lastMid
+      const lastDist = gestureState.current.lastDist
+
+      if (lastMid && lastDist > 0) {
+        const scale = dist / lastDist
+        const dx = mid.x - lastMid.x
+        const dy = mid.y - lastMid.y
+
+        setView(v => {
+          const newZoom = Math.max(0.01, Math.min(100, v.zoom * scale))
+          const zoomRatio = newZoom / v.zoom
+          return {
+            zoom: newZoom,
+            panX: mid.x - (mid.x - v.panX) * zoomRatio + dx,
+            panY: mid.y - (mid.y - v.panY) * zoomRatio + dy
+          }
+        })
       }
+
+      gestureState.current = updateGesture(gestureState.current, mid, dist)
       return
     }
 
@@ -330,7 +342,7 @@ export const App = ({ roomId, peerId }) => {
     if (!erasing && currentPoints.current.length > 0) {
       const last = currentPoints.current[currentPoints.current.length - 1]
       const worldDist = getDistance(last, point)
-      setPaintLevels(prev => consumePaint(prev, currentColorRef.current, worldDist, brushSizeRef.current, viewRef.current.zoom))
+      setPaintLevels(prev => consumePaint(prev, currentColorRef.current, worldDist, brushSizeRef.current))
     }
 
     currentPoints.current.push(point)
@@ -371,8 +383,11 @@ export const App = ({ roomId, peerId }) => {
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
-    const newView = calculateWheelZoom(e.deltaY, e.clientX, e.clientY, viewRef.current)
-    setView(newView)
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const focalX = e.clientX - rect.left
+    const focalY = e.clientY - rect.top
+    setView(v => calculateWheelZoom(e.deltaY, focalX, focalY, v))
   }, [])
 
   const handleClear = useCallback(() => {

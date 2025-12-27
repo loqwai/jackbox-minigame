@@ -25,30 +25,30 @@ describe('consumePaint', () => {
   })
 
   it('reduces paint for color used', () => {
-    const result = consumePaint(levels, '#000000', 10, 10, 1)
+    const result = consumePaint(levels, '#000000', 10, 10)
     expect(result['#000000']).toBeLessThan(100)
   })
 
   it('does not reduce paint for white (eraser)', () => {
-    const result = consumePaint(levels, '#ffffff', 10, 10, 1)
+    const result = consumePaint(levels, '#ffffff', 10, 10)
     expect(result['#ffffff']).toBe(100)
   })
 
   it('scales consumption with brush size', () => {
-    const small = consumePaint(levels, '#000000', 10, 5, 1)
-    const large = consumePaint(levels, '#000000', 10, 20, 1)
+    const small = consumePaint(levels, '#000000', 10, 5)
+    const large = consumePaint(levels, '#000000', 10, 20)
     expect(small['#000000']).toBeGreaterThan(large['#000000'])
   })
 
-  it('scales consumption with zoom', () => {
-    const zoomedOut = consumePaint(levels, '#000000', 10, 10, 0.5)
-    const zoomedIn = consumePaint(levels, '#000000', 10, 10, 2)
-    expect(zoomedOut['#000000']).toBeGreaterThan(zoomedIn['#000000'])
+  it('scales consumption with distance', () => {
+    const short = consumePaint(levels, '#000000', 5, 10)
+    const long = consumePaint(levels, '#000000', 20, 10)
+    expect(short['#000000']).toBeGreaterThan(long['#000000'])
   })
 
   it('clamps to zero', () => {
     levels['#000000'] = 1
-    const result = consumePaint(levels, '#000000', 100, 10, 1)
+    const result = consumePaint(levels, '#000000', 100, 10)
     expect(result['#000000']).toBe(0)
   })
 })

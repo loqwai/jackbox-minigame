@@ -8,10 +8,9 @@ export const initPaintLevels = () => {
   return levels
 }
 
-export const consumePaint = (levels, color, distance, brushSize, zoom) => {
+export const consumePaint = (levels, color, distance, brushSize) => {
   if (color === '#ffffff') return levels
-  const screenDist = distance * zoom
-  const paintUsed = screenDist * PAINT_USE_RATE * (brushSize / 10)
+  const paintUsed = distance * PAINT_USE_RATE * (brushSize / 10)
   return {
     ...levels,
     [color]: Math.max(0, levels[color] - paintUsed)
