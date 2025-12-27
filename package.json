@@ -9,12 +9,13 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "nuke-dead-code": "knip --fix --allow-remove-files && biome lint --write --only=correctness/noUnusedImports --only=correctness/noUnusedVariables --only=correctness/noUnusedFunctionParameters --only=correctness/noUnusedLabels ."
+    "nuke-dead-code": "knip --fix --allow-remove-files && biome lint --only=correctness/noUnusedVariables --only=correctness/noUnusedImports --reporter=json . | remove-unused-vars"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@cloudflare/workers-types": "^4.20241205.0",
     "knip": "^5.44.0",
+    "remove-unused-vars": "^0.0.11",
     "typescript": "^5.7.2",
     "vitest": "^4.0.16",
     "wrangler": "^3.99.0"

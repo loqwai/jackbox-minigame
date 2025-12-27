@@ -1,9 +1,5 @@
 import { DurableObject } from "cloudflare:workers"
 
-interface Env {
-  DRAWING_ROOM: DurableObjectNamespace<DrawingRoom>
-}
-
 // WebRTC types (not available in Workers runtime, but needed for signaling relay)
 type RTCSessionDescriptionInit = { type: string; sdp?: string }
 type RTCIceCandidateInit = { candidate?: string; sdpMid?: string | null; sdpMLineIndex?: number | null }
@@ -16,10 +12,6 @@ type SignalingMessage =
   | { type: "offer"; from: string; to: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; from: string; to: string; sdp: RTCSessionDescriptionInit }
   | { type: "ice"; from: string; to: string; candidate: RTCIceCandidateInit }
-
-type DrawMessage =
-  | { type: "stroke"; points: Point[]; color: string; size: number }
-  | { type: "clear" }
 
 type ServerMessage =
   | { type: "stroke"; points: Point[]; color: string; size: number }
