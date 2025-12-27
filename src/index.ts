@@ -1,7 +1,5 @@
 import { DrawingRoom } from "./drawing-room"
 import { YDrawingRoom } from "./y-drawing-room"
-import { drawHtml } from "./client/draw"
-import { presentHtml } from "./client/present"
 import { manifestJson } from "./client/manifest"
 import { serviceWorkerJs } from "./client/sw"
 
@@ -10,16 +8,13 @@ export { DrawingRoom, YDrawingRoom }
 
 interface Env {
   Y_DRAWING_ROOM: DurableObjectNamespace<YDrawingRoom>
+  ASSETS: Fetcher
 }
 
 const generateRoomId = () => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
   return Array.from({ length: 4 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join("")
 }
-
-const html = (content: string) => new Response(content, {
-  headers: { "Content-Type": "text/html; charset=utf-8" },
-})
 
 const json = (content: string, type = "application/json") => new Response(content, {
   headers: { "Content-Type": type },
@@ -42,12 +37,16 @@ export default {
 
     if (subPath === "/ws") {
       const id = env.Y_DRAWING_ROOM.idFromName(roomId)
-      return env.Y_DRAWING_ROOM.get(id).fetch(request)
+      const stub = env.Y_DRAWING_ROOM.get(id)
+      // y-durableobjects expects /rooms/:id internally
+      const internalUrl = new URL(`/rooms/${roomId}`, url.origin)
+      internalUrl.search = url.search
+      return stub.fetch(new Request(internalUrl, request))
     }
     // Legacy /ws-legacy route removed - all sync now via Yjs
 
-    if (subPath === "/present") return html(presentHtml(roomId))
-    if (subPath === "" || subPath === "/") return html(drawHtml(roomId))
+    if (subPath === "/present") return env.ASSETS.fetch(new Request(`${url.origin}/present.html`))
+    if (subPath === "" || subPath === "/") return env.ASSETS.fetch(new Request(`${url.origin}/draw.html`))
 
     return new Response("Not Found", { status: 404 })
   },

@@ -1,9 +1,9 @@
-export const presentHtml = (roomId: string): string => `<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Present - Room ${roomId}</title>
+  <title>Present</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box }
     html, body, #app {
@@ -41,7 +41,8 @@ export const presentHtml = (roomId: string): string => `<!DOCTYPE html>
     import { useRef, useEffect, useState } from 'https://esm.sh/preact@10.25.4/hooks'
     import { html } from 'https://esm.sh/htm@3.1.1/preact?deps=preact@10.25.4'
 
-    const ROOM_ID = "${roomId}"
+    const ROOM_ID = location.pathname.split("/")[2].toUpperCase()
+    document.title = "Present - Room " + ROOM_ID
 
     let ws = null
     let canvasEl = null
@@ -120,27 +121,27 @@ export const presentHtml = (roomId: string): string => `<!DOCTYPE html>
         : "Connecting..."
       const urlHint = location.origin + "/room/" + ROOM_ID
 
-      return html\`
+      return html`
         <div class="app">
           <div class="header">
             <div class="room-info">
               <div class="join-label">Join at:</div>
-              <div class="room-code">\${ROOM_ID}</div>
+              <div class="room-code">${ROOM_ID}</div>
             </div>
-            <div class="user-count">\${statusText}</div>
+            <div class="user-count">${statusText}</div>
           </div>
 
-          <div class="canvas-container" ref=\${containerRef}>
-            <canvas ref=\${canvasRef} />
+          <div class="canvas-container" ref=${containerRef}>
+            <canvas ref=${canvasRef} />
           </div>
 
-          \${!connected && html\`<div class="status">Reconnecting...</div>\`}
-          \${connected && html\`<div class="url-hint">\${urlHint}</div>\`}
+          ${!connected && html`<div class="status">Reconnecting...</div>`}
+          ${connected && html`<div class="url-hint">${urlHint}</div>`}
         </div>
-      \`
+      `
     }
 
-    render(html\`<\${App} />\`, document.getElementById("app"))
+    render(html`<${App} />`, document.getElementById("app"))
   </script>
 </body>
-</html>`
+</html>

@@ -1,13 +1,13 @@
-export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#1a1a2e">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="/manifest.json">
-  <title>Draw - ${roomId}</title>
+  <title>Draw</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; user-select: none }
     html, body, #app {
@@ -284,7 +284,8 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
       navigator.serviceWorker.register('/sw.js').catch(() => {})
     }
 
-    const ROOM_ID = "${roomId}"
+    const ROOM_ID = location.pathname.split("/")[2].toUpperCase()
+    document.title = "Draw - " + ROOM_ID
     const COLORS = ["#000000", "#e94560", "#f39c12", "#2ecc71", "#3498db", "#9b59b6", "#1abc9c", "#ffffff"]
 
     // ========================================
@@ -2046,165 +2047,165 @@ export const drawHtml = (roomId: string): string => `<!DOCTYPE html>
         }
       })
 
-      return html\`
+      return html`
         <div class="app">
           <div class="header">
             <div>
-              <span class="room-code">\${ROOM_ID}</span>
-              \${!online && html\`<span class="offline-badge">OFFLINE</span>\`}
+              <span class="room-code">${ROOM_ID}</span>
+              ${!online && html`<span class="offline-badge">OFFLINE</span>`}
             </div>
             <div>
-              <span class="user-count">\${statusText}</span>
-              \${peerCount > 0 && html\`<span class="peer-count"> (\${peerCount} P2P)</span>\`}
+              <span class="user-count">${statusText}</span>
+              ${peerCount > 0 && html`<span class="peer-count"> (${peerCount} P2P)</span>`}
             </div>
           </div>
 
-          <div class="canvas-container" ref=\${containerRef} onWheel=\${handleWheel}>
+          <div class="canvas-container" ref=${containerRef} onWheel=${handleWheel}>
             <canvas
               id="infinite-canvas"
-              ref=\${canvasRef}
-              onPointerDown=\${handlePointerDown}
-              onPointerMove=\${handlePointerMove}
-              onPointerUp=\${handlePointerUp}
-              onPointerCancel=\${handlePointerUp}
-              onPointerLeave=\${handlePointerUp}
-              onContextMenu=\${handleContextMenu}
+              ref=${canvasRef}
+              onPointerDown=${handlePointerDown}
+              onPointerMove=${handlePointerMove}
+              onPointerUp=${handlePointerUp}
+              onPointerCancel=${handlePointerUp}
+              onPointerLeave=${handlePointerUp}
+              onContextMenu=${handleContextMenu}
             />
             <div class="minimap">
               <div class="minimap-inner">
-                \${minimapElements.map((el, i) => {
+                ${minimapElements.map((el, i) => {
                   if (el.type === 'cursor') {
                     const cls = 'minimap-cursor' + (el.isSelf ? ' self' : ' clickable')
                     const style = 'left:' + el.x + 'px;top:' + el.y + 'px;background:' + el.color
                     if (el.isSelf) {
-                      return html\`<div key=\${i} class=\${cls} style=\${style} />\`
+                      return html`<div key=${i} class=${cls} style=${style} />`
                     }
-                    return html\`<div key=\${i} class=\${cls} style=\${style} onClick=\${() => goToPlayer(el.peerId)} title="Click to go to player" />\`
+                    return html`<div key=${i} class=${cls} style=${style} onClick=${() => goToPlayer(el.peerId)} title="Click to go to player" />`
                   } else if (el.type === 'arrow') {
                     const style = 'left:' + el.x + 'px;top:' + el.y + 'px;border-bottom-color:' + el.color + ';transform:translate(-50%,-50%) rotate(' + el.rotation + 'deg);cursor:pointer'
-                    return html\`<div key=\${i} class="minimap-arrow" style=\${style} onClick=\${() => goToPlayer(el.peerId)} title="Click to go to player" />\`
+                    return html`<div key=${i} class="minimap-arrow" style=${style} onClick=${() => goToPlayer(el.peerId)} title="Click to go to player" />`
                   } else if (el.type === 'enemy') {
                     const style = 'left:' + el.x + 'px;top:' + el.y + 'px;background:#e94560;width:6px;height:6px'
-                    return html\`<div key=\${i} class="minimap-cursor" style=\${style} />\`
+                    return html`<div key=${i} class="minimap-cursor" style=${style} />`
                   } else if (el.type === 'enemy-arrow') {
                     const style = 'left:' + el.x + 'px;top:' + el.y + 'px;border-bottom-color:#e94560;transform:translate(-50%,-50%) rotate(' + el.rotation + 'deg);opacity:0.7'
-                    return html\`<div key=\${i} class="minimap-arrow" style=\${style} />\`
+                    return html`<div key=${i} class="minimap-arrow" style=${style} />`
                   }
                 })}
               </div>
             </div>
             <div class="coords-display">
-              <div><span class="coords-label">X:</span><span class="coords-value">\${Math.round(myDisplayPos.x)}</span></div>
-              <div><span class="coords-label">Y:</span><span class="coords-value">\${Math.round(myDisplayPos.y)}</span></div>
-              <div><span class="coords-label">Zoom:</span><span class="coords-value">\${Math.round(view.zoom * 100)}%</span></div>
+              <div><span class="coords-label">X:</span><span class="coords-value">${Math.round(myDisplayPos.x)}</span></div>
+              <div><span class="coords-label">Y:</span><span class="coords-value">${Math.round(myDisplayPos.y)}</span></div>
+              <div><span class="coords-label">Zoom:</span><span class="coords-value">${Math.round(view.zoom * 100)}%</span></div>
             </div>
-            \${remoteCursors.size > 0 && html\`
+            ${remoteCursors.size > 0 && html`
               <div class="player-list">
-                <div class="player-list-title">Players (\${remoteCursors.size + 1})</div>
+                <div class="player-list-title">Players (${remoteCursors.size + 1})</div>
                 <div class="player-item">
-                  <div class="player-dot" style="background:\${selfColor}" />
+                  <div class="player-dot" style="background:${selfColor}" />
                   <div class="player-name">You</div>
-                  <div class="player-coords">\${Math.round(myDisplayPos.x)}, \${Math.round(myDisplayPos.y)}</div>
+                  <div class="player-coords">${Math.round(myDisplayPos.x)}, ${Math.round(myDisplayPos.y)}</div>
                 </div>
-                \${Array.from(remoteCursors.entries()).map(([peerId, cursor]) => {
+                ${Array.from(remoteCursors.entries()).map(([peerId, cursor]) => {
                   const color = getPeerColor(peerId)
                   const shortId = peerId.slice(0, 4)
-                  return html\`
-                    <div class="player-item" key=\${peerId}>
-                      <div class="player-dot" style="background:\${color}" />
-                      <div class="player-name">P-\${shortId}</div>
-                      <div class="player-coords">\${Math.round(cursor.x)}, \${Math.round(cursor.y)}</div>
-                      <button class="goto-btn" onClick=\${() => goToPlayer(peerId)}>Go</button>
+                  return html`
+                    <div class="player-item" key=${peerId}>
+                      <div class="player-dot" style="background:${color}" />
+                      <div class="player-name">P-${shortId}</div>
+                      <div class="player-coords">${Math.round(cursor.x)}, ${Math.round(cursor.y)}</div>
+                      <button class="goto-btn" onClick=${() => goToPlayer(peerId)}>Go</button>
                     </div>
-                  \`
+                  `
                 })}
               </div>
-            \`}
-            \${drawDisabled && html\`
+            `}
+            ${drawDisabled && html`
               <div class="disabled-overlay">
                 DRAWING DISABLED
-                <span class="disabled-timer">\${disabledTimer}s</span>
+                <span class="disabled-timer">${disabledTimer}s</span>
               </div>
-            \`}
-            \${paintWarning && html\`
-              <div class="paint-warning" key=\${paintWarning.key}>
+            `}
+            ${paintWarning && html`
+              <div class="paint-warning" key=${paintWarning.key}>
                 OUT OF PAINT!
               </div>
-            \`}
+            `}
           </div>
 
           <div class="toolbar">
-            \${COLORS.filter(c => c !== '#ffffff').map(c => {
+            ${COLORS.filter(c => c !== '#ffffff').map(c => {
               const active = currentColor === c && !isEraser
               const paintLevel = paintLevels[c] || 0
               const fillPercent = (paintLevel / MAX_PAINT) * 100
               const isEmpty = paintLevel <= 0
               const isShaking = paintWarning && paintWarning.color === c
               const cls = 'paint-bucket' + (active ? ' active' : '') + (isEmpty ? ' empty' : '') + (isShaking ? ' shake' : '')
-              return html\`
-                <div class=\${cls} key=\${c + (isShaking ? paintWarning.key : '')} onClick=\${() => { if (!isEmpty) { setCurrentColor(c); setIsEraser(false) } }}>
-                  <div class="bucket-handle" style="border-color:\${c}" />
-                  <div class="bucket-rim" style="background:\${c}" />
+              return html`
+                <div class=${cls} key=${c + (isShaking ? paintWarning.key : '')} onClick=${() => { if (!isEmpty) { setCurrentColor(c); setIsEraser(false) } }}>
+                  <div class="bucket-handle" style="border-color:${c}" />
+                  <div class="bucket-rim" style="background:${c}" />
                   <div class="bucket-body" style="background:rgba(0,0,0,0.2)">
-                    <div class="bucket-fill" style="background:\${c};height:\${fillPercent}%" />
+                    <div class="bucket-fill" style="background:${c};height:${fillPercent}%" />
                   </div>
-                  \${paintLevel > 20 && html\`
-                    <div class="paint-spill" style="background:\${c}" />
+                  ${paintLevel > 20 && html`
+                    <div class="paint-spill" style="background:${c}" />
                     <div class="paint-drops">
-                      <div class="paint-drop" style="background:\${c}" />
-                      <div class="paint-drop" style="background:\${c}" />
-                      <div class="paint-drop" style="background:\${c}" />
+                      <div class="paint-drop" style="background:${c}" />
+                      <div class="paint-drop" style="background:${c}" />
+                      <div class="paint-drop" style="background:${c}" />
                     </div>
-                  \`}
+                  `}
                   <div class="reload-bar">
-                    <div class="reload-progress" style="width:\${fillPercent}%;background:\${c}" />
+                    <div class="reload-progress" style="width:${fillPercent}%;background:${c}" />
                   </div>
                 </div>
-              \`
+              `
             })}
 
-            <input type="range" class="size-slider" min="2" max="40" value=\${brushSize}
-              onInput=\${(e) => setBrushSize(parseInt(e.target.value))} />
+            <input type="range" class="size-slider" min="2" max="40" value=${brushSize}
+              onInput=${(e) => setBrushSize(parseInt(e.target.value))} />
 
-            <button class=\${'tool-btn' + (isEraser ? ' active' : '')}
-              onClick=\${() => setIsEraser(!isEraser)}>Erase</button>
+            <button class=${'tool-btn' + (isEraser ? ' active' : '')}
+              onClick=${() => setIsEraser(!isEraser)}>Erase</button>
 
-            <button class="tool-btn" onClick=\${sendClear}>Clear</button>
+            <button class="tool-btn" onClick=${sendClear}>Clear</button>
 
-            <button class="tool-btn" onClick=\${zoomOut}>-</button>
-            <span class="zoom-display">\${Math.round(view.zoom * 100)}%</span>
-            <button class="tool-btn" onClick=\${zoomIn}>+</button>
-            <button class="tool-btn" onClick=\${resetView}>Reset</button>
-            <button class="tool-btn host-btn" onClick=\${showHostQr}>Host</button>
+            <button class="tool-btn" onClick=${zoomOut}>-</button>
+            <span class="zoom-display">${Math.round(view.zoom * 100)}%</span>
+            <button class="tool-btn" onClick=${zoomIn}>+</button>
+            <button class="tool-btn" onClick=${resetView}>Reset</button>
+            <button class="tool-btn host-btn" onClick=${showHostQr}>Host</button>
           </div>
 
-          \${showHost && html\`
-            <div class="modal-overlay" onClick=\${hideHost}>
-              <div class="modal-content" onClick=\${(e) => e.stopPropagation()}>
+          ${showHost && html`
+            <div class="modal-overlay" onClick=${hideHost}>
+              <div class="modal-content" onClick=${(e) => e.stopPropagation()}>
                 <div class="modal-title">Host Offline Session</div>
                 <div class="modal-subtitle">
                   1. Enable phone hotspot<br/>
                   2. Connect other devices to your hotspot<br/>
                   3. Scan QR code to join
                 </div>
-                \${qrSvg && html\`
-                  <div class="qr-container" dangerouslySetInnerHTML=\${{ __html: qrSvg }} />
-                \`}
-                \${localIp && html\`
-                  <div class="url-display">http://\${localIp}:8787/room/\${ROOM_ID}</div>
-                \`}
-                \${!localIp && html\`
+                ${qrSvg && html`
+                  <div class="qr-container" dangerouslySetInnerHTML=${{ __html: qrSvg }} />
+                `}
+                ${localIp && html`
+                  <div class="url-display">http://${localIp}:8787/room/${ROOM_ID}</div>
+                `}
+                ${!localIp && html`
                   <div class="modal-subtitle">Detecting local IP...</div>
-                \`}
-                <button class="modal-close" onClick=\${hideHost}>Close</button>
+                `}
+                <button class="modal-close" onClick=${hideHost}>Close</button>
               </div>
             </div>
-          \`}
+          `}
         </div>
-      \`
+      `
     }
 
-    render(html\`<\${App} />\`, document.getElementById('app'))
+    render(html`<${App} />`, document.getElementById('app'))
   </script>
 </body>
-</html>`
+</html>
