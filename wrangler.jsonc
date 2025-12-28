@@ -6,8 +6,7 @@
   "preview_urls": true,
 
   "routes": [
-    { "pattern": "draw.hypnodroid.com", "custom_domain": true },
-    { "pattern": "*.draw.hypnodroid.com", "zone_name": "hypnodroid.com" }
+    { "pattern": "draw.hypnodroid.com", "custom_domain": true }
   ],
 
   "assets": {
