@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>Draw - Join a Room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #1a1a2e;
+      --bg-panel: #16213e;
+      --accent: #e94560;
+      --accent-glow: rgba(233, 69, 96, 0.4);
+      --text: #f0f0f0;
+      --text-muted: rgba(255, 255, 255, 0.5);
+      --success: #2ecc71;
+      --warning: #f39c12;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      min-height: 100vh;
+      background: var(--bg-deep);
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--text);
+      overflow-x: hidden;
+    }
+
+    /* Animated background with paint-like blobs */
+    .bg-canvas {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .paint-blob {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.15;
+      animation: float 20s ease-in-out infinite;
+    }
+
+    .paint-blob:nth-child(1) {
+      width: 400px;
+      height: 400px;
+      background: var(--accent);
+      top: -100px;
+      right: -100px;
+      animation-delay: 0s;
+    }
+
+    .paint-blob:nth-child(2) {
+      width: 300px;
+      height: 300px;
+      background: #3498db;
+      bottom: -50px;
+      left: -50px;
+      animation-delay: -7s;
+    }
+
+    .paint-blob:nth-child(3) {
+      width: 250px;
+      height: 250px;
+      background: #9b59b6;
+      top: 50%;
+      left: 30%;
+      animation-delay: -14s;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(30px, -30px) scale(1.1); }
+      50% { transform: translate(-20px, 20px) scale(0.95); }
+      75% { transform: translate(20px, 10px) scale(1.05); }
+    }
+
+    /* Main container */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px 60px;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      text-align: center;
+      margin-bottom: 48px;
+      animation: fadeSlideDown 0.8s ease-out;
+    }
+
+    @keyframes fadeSlideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .logo-icon {
+      width: 48px;
+      height: 48px;
+      background: linear-gradient(135deg, var(--accent), #ff6b8a);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 8px 32px var(--accent-glow);
+    }
+
+    .logo-icon svg {
+      width: 28px;
+      height: 28px;
+      fill: white;
+    }
+
+    .logo-text {
+      font-size: 36px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.7) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .tagline {
+      font-size: 16px;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+    }
+
+    /* Create button */
+    .create-section {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 48px;
+      animation: fadeSlideUp 0.8s ease-out 0.2s both;
+    }
+
+    @keyframes fadeSlideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .create-btn {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 18px 36px;
+      background: linear-gradient(135deg, var(--accent), #ff6b8a);
+      border: none;
+      border-radius: 16px;
+      color: white;
+      font-family: inherit;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      overflow: hidden;
+      transition: all 0.3s ease;
+      box-shadow: 0 8px 32px var(--accent-glow);
+    }
+
+    .create-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.2), transparent);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .create-btn:hover {
+      transform: translateY(-3px) scale(1.02);
+      box-shadow: 0 16px 48px var(--accent-glow);
+    }
+
+    .create-btn:hover::before {
+      opacity: 1;
+    }
+
+    .create-btn:active {
+      transform: translateY(0) scale(0.98);
+    }
+
+    .create-btn.loading {
+      pointer-events: none;
+      opacity: 0.8;
+    }
+
+    .create-btn svg {
+      width: 24px;
+      height: 24px;
+      fill: currentColor;
+      transition: transform 0.3s;
+    }
+
+    .create-btn:hover svg {
+      transform: rotate(90deg);
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Section title */
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+      animation: fadeSlideUp 0.8s ease-out 0.4s both;
+    }
+
+    .section-title h2 {
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--text-muted);
+    }
+
+    .section-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(255,255,255,0.1), transparent);
+    }
+
+    .room-count {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--accent);
+      background: rgba(233, 69, 96, 0.15);
+      padding: 4px 10px;
+      border-radius: 20px;
+    }
+
+    /* Room grid */
+    .room-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 20px;
+    }
+
+    /* Room card */
+    .room-card {
+      position: relative;
+      background: var(--bg-panel);
+      border-radius: 16px;
+      padding: 24px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border: 1px solid rgba(255,255,255,0.05);
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      animation: cardFadeIn 0.5s ease-out both;
+    }
+
+    .room-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), #ff6b8a, #9b59b6);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .room-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(255,255,255,0.1);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+    }
+
+    .room-card:hover::before {
+      opacity: 1;
+    }
+
+    @keyframes cardFadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px) scale(0.95);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    .room-card:nth-child(1) { animation-delay: 0.1s; }
+    .room-card:nth-child(2) { animation-delay: 0.15s; }
+    .room-card:nth-child(3) { animation-delay: 0.2s; }
+    .room-card:nth-child(4) { animation-delay: 0.25s; }
+    .room-card:nth-child(5) { animation-delay: 0.3s; }
+    .room-card:nth-child(6) { animation-delay: 0.35s; }
+
+    .room-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 28px;
+      font-weight: 500;
+      letter-spacing: 4px;
+      margin-bottom: 16px;
+      color: white;
+    }
+
+    .room-meta {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .room-users {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+
+    .user-dots {
+      display: flex;
+      gap: 4px;
+    }
+
+    .user-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .user-dot:nth-child(1) { background: #e94560; animation-delay: 0s; }
+    .user-dot:nth-child(2) { background: #3498db; animation-delay: 0.3s; }
+    .user-dot:nth-child(3) { background: #2ecc71; animation-delay: 0.6s; }
+    .user-dot.extra { background: var(--text-muted); }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.7; }
+    }
+
+    .user-count-text {
+      color: var(--text-muted);
+    }
+
+    .room-activity {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+
+    .activity-live {
+      color: var(--success);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--success);
+      border-radius: 50%;
+      animation: blink 1.5s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 80px 40px;
+      animation: fadeSlideUp 0.8s ease-out 0.5s both;
+    }
+
+    .empty-canvas {
+      width: 120px;
+      height: 120px;
+      margin: 0 auto 24px;
+      background: var(--bg-panel);
+      border-radius: 16px;
+      border: 2px dashed rgba(255,255,255,0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .empty-canvas::before {
+      content: '';
+      position: absolute;
+      width: 60px;
+      height: 60px;
+      border: 2px dashed rgba(255,255,255,0.1);
+      border-radius: 8px;
+      animation: emptyPulse 3s ease-in-out infinite;
+    }
+
+    @keyframes emptyPulse {
+      0%, 100% { transform: scale(1); opacity: 0.5; }
+      50% { transform: scale(1.1); opacity: 0.2; }
+    }
+
+    .empty-canvas svg {
+      width: 40px;
+      height: 40px;
+      fill: var(--text-muted);
+      opacity: 0.5;
+    }
+
+    .empty-state h3 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+
+    .empty-state p {
+      font-size: 14px;
+      color: var(--text-muted);
+      max-width: 280px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    /* Loading state */
+    .loading-state {
+      display: flex;
+      justify-content: center;
+      padding: 60px;
+      animation: fadeSlideUp 0.5s ease-out;
+    }
+
+    .loading-dots {
+      display: flex;
+      gap: 8px;
+    }
+
+    .loading-dots span {
+      width: 12px;
+      height: 12px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: loadingBounce 1.4s ease-in-out infinite;
+    }
+
+    .loading-dots span:nth-child(1) { animation-delay: 0s; }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes loadingBounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      animation: fadeSlideUp 0.8s ease-out 0.6s both;
+    }
+
+    .footer p {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .container {
+        padding: 24px 16px 40px;
+      }
+
+      .logo-text {
+        font-size: 28px;
+      }
+
+      .create-btn {
+        width: 100%;
+        justify-content: center;
+        padding: 16px 24px;
+      }
+
+      .room-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .room-code {
+        font-size: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Animated background -->
+  <div class="bg-canvas">
+    <div class="paint-blob"></div>
+    <div class="paint-blob"></div>
+    <div class="paint-blob"></div>
+  </div>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M20.71 4.63l-1.34-1.34c-.39-.39-1.02-.39-1.41 0L9 12.25 11.75 15l8.96-8.96c.39-.39.39-1.02 0-1.41zM7 14a3 3 0 0 0-3 3c0 1.31-1.16 2-2 2 .92 1.22 2.49 2 4 2a4 4 0 0 0 4-4 3 3 0 0 0-3-3z"/></svg>
+        </div>
+        <span class="logo-text">Draw</span>
+      </div>
+      <p class="tagline">Collaborative canvas for everyone</p>
+    </header>
+
+    <!-- Create new room -->
+    <div class="create-section">
+      <button class="create-btn" id="createBtn">
+        <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+        <span>Create New Room</span>
+      </button>
+    </div>
+
+    <!-- Room list section -->
+    <div class="section-title">
+      <h2>Active Rooms</h2>
+      <span class="room-count" id="roomCount">0</span>
+    </div>
+
+    <!-- Room grid container -->
+    <div id="roomList">
+      <div class="loading-state">
+        <div class="loading-dots">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Click a room to join, or create your own canvas</p>
+    </footer>
+  </div>
+
+  <script>
+    const roomList = document.getElementById('roomList')
+    const roomCount = document.getElementById('roomCount')
+    const createBtn = document.getElementById('createBtn')
+
+    const formatTime = (timestamp) => {
+      const seconds = Math.floor((Date.now() - timestamp) / 1000)
+      if (seconds < 10) return 'just now'
+      if (seconds < 60) return `${seconds}s ago`
+      const minutes = Math.floor(seconds / 60)
+      if (minutes < 60) return `${minutes}m ago`
+      const hours = Math.floor(minutes / 60)
+      if (hours < 24) return `${hours}h ago`
+      return `${Math.floor(hours / 24)}d ago`
+    }
+
+    const renderUserDots = (count) => {
+      const dots = []
+      const show = Math.min(count, 3)
+      for (let i = 0; i < show; i++) {
+        dots.push(`<div class="user-dot"></div>`)
+      }
+      if (count > 3) {
+        dots.push(`<div class="user-dot extra"></div>`)
+      }
+      return dots.join('')
+    }
+
+    const renderRooms = (rooms) => {
+      if (rooms.length === 0) {
+        roomList.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-canvas">
+              <svg viewBox="0 0 24 24"><path d="M20.71 4.63l-1.34-1.34c-.39-.39-1.02-.39-1.41 0L9 12.25 11.75 15l8.96-8.96c.39-.39.39-1.02 0-1.41zM7 14a3 3 0 0 0-3 3c0 1.31-1.16 2-2 2 .92 1.22 2.49 2 4 2a4 4 0 0 0 4-4 3 3 0 0 0-3-3z"/></svg>
+            </div>
+            <h3>No active rooms</h3>
+            <p>Be the first to create a canvas and start drawing with friends</p>
+          </div>
+        `
+        roomCount.textContent = '0'
+        return
+      }
+
+      roomCount.textContent = rooms.length
+
+      roomList.innerHTML = `
+        <div class="room-grid">
+          ${rooms.map(room => {
+            const isLive = room.userCount > 0
+            const activityText = isLive
+              ? `<span class="activity-live"><span class="live-dot"></span>Live</span>`
+              : formatTime(room.lastActivity)
+
+            return `
+              <a href="/room/${room.id}" class="room-card">
+                <div class="room-code">${room.id}</div>
+                <div class="room-meta">
+                  <div class="room-users">
+                    <div class="user-dots">${renderUserDots(room.userCount)}</div>
+                    <span class="user-count-text">${room.userCount} ${room.userCount === 1 ? 'artist' : 'artists'}</span>
+                  </div>
+                  <div class="room-activity">${activityText}</div>
+                </div>
+              </a>
+            `
+          }).join('')}
+        </div>
+      `
+    }
+
+    const fetchRooms = async () => {
+      try {
+        const res = await fetch('/api/rooms')
+        const rooms = await res.json()
+        renderRooms(rooms)
+      } catch (err) {
+        console.error('Failed to fetch rooms:', err)
+      }
+    }
+
+    const createRoom = async () => {
+      createBtn.classList.add('loading')
+      createBtn.innerHTML = '<div class="spinner"></div><span>Creating...</span>'
+
+      try {
+        const res = await fetch('/api/rooms', { method: 'POST' })
+        const { url } = await res.json()
+        window.location.href = url
+      } catch (err) {
+        console.error('Failed to create room:', err)
+        createBtn.classList.remove('loading')
+        createBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg><span>Create New Room</span>'
+      }
+    }
+
+    createBtn.addEventListener('click', createRoom)
+
+    // Initial fetch
+    fetchRooms()
+
+    // Auto-refresh every 5 seconds
+    setInterval(fetchRooms, 5000)
+  </script>
+</body>
+</html>
