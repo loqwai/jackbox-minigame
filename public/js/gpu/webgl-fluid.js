@@ -6,12 +6,12 @@ import { CHUNK_CONFIG } from './chunk-manager.js'
 const FLUID_PARAMS = {
   maxVolume: 1.0,
   minVolume: 0.001,
-  flowRate: 0.25,           // Faster flow
+  flowRate: 0.35,           // Faster flow (compensate for fewer iterations)
   surfaceTension: 0.02,     // Lower threshold = more spreading
-  sourceDecay: 0.9995,      // Slower decay = longer generation
-  sourceStrength: 0.04,     // More volume from source
+  sourceDecay: 0.999,       // Faster decay for mobile
+  sourceStrength: 0.06,     // More volume from source
   pressureMultiplier: 2.0,  // More pressure-driven flow
-  iterations: 4,            // Multiple sim passes per frame
+  iterations: 1,            // Single pass for mobile performance
 }
 
 // Map game colors to indices (must match PALETTE in shader)
@@ -124,15 +124,11 @@ float noise(vec2 p) {
 // Rotation matrix to break grid alignment
 mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);  // ~37 degree rotation
 
-// Fractal brownian motion for multi-scale noise with rotation
+// Simplified FBM - only 2 octaves for mobile performance
 float fbm(vec2 p) {
-  float value = 0.0;
-  float amplitude = 0.5;
-  for (int i = 0; i < 4; i++) {
-    value += amplitude * noise(p);
-    p = rot * p * 2.0;  // Rotate AND scale each octave
-    amplitude *= 0.5;
-  }
+  float value = noise(p) * 0.6;
+  p = rot * p * 2.0;
+  value += noise(p) * 0.4;
   return value;
 }
 
@@ -505,27 +501,31 @@ export const createFluidWebGL = (canvas) => {
     if (!stroke.points || stroke.points.length < 2) return
     if (stroke.color === '#ffffff') return
 
-    const baseVolume = (stroke.size || 5) / 5  // Increased volume
+    const baseVolume = (stroke.size || 5) / 8  // Reduced base volume
     const colorIndex = colorToIndex(stroke.color)
-    console.log('[WebGL] Adding stroke:', stroke.color, 'colorIndex:', colorIndex, 'points:', stroke.points.length, 'volume:', baseVolume)
 
     for (let i = 1; i < stroke.points.length; i++) {
       const p1 = stroke.points[i - 1]
       const p2 = stroke.points[i]
       const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
-      const steps = Math.max(1, Math.floor(dist / 4))
 
-      for (let j = 0; j <= steps; j++) {
+      // Skip very short segments to avoid pooling at stroke start
+      if (dist < 4) continue
+
+      // Volume proportional to distance traveled (consistent density)
+      const volumeForSegment = baseVolume * Math.min(dist / 20, 1.5)
+      const steps = Math.max(1, Math.floor(dist / 6))
+      const volumePerPoint = volumeForSegment / (steps + 1)
+
+      // Skip first point of segment to avoid overlap with previous segment's last point
+      for (let j = 1; j <= steps; j++) {
         const t = j / steps
         const x = p1.x + (p2.x - p1.x) * t
         const y = p1.y + (p2.y - p1.y) * t
-        pendingInk.push({ worldX: x, worldY: y, volume: baseVolume / steps, colorIndex })
+        pendingInk.push({ worldX: x, worldY: y, volume: volumePerPoint, colorIndex })
       }
     }
   }
-
-  // Single-pixel buffer for incremental ink updates
-  const singlePixel = new Float32Array(4)
 
   const flushPendingInk = () => {
     if (pendingInk.length === 0) return
@@ -548,60 +548,37 @@ export const createFluidWebGL = (canvas) => {
       const texSize = chunk.textures.size
       const ghost = config.ghostCells
 
-      // Read current texture state to add ink on top
-      // First, read back current texture data if we haven't
+      // Read back current texture to accumulate ink
       if (!chunk.cpuData) {
         chunk.cpuData = new Float32Array(texSize * texSize * 4)
       }
 
-      // For each cell, read its current value, add ink, write back
-      // Use FBO to read from texture
       gl.bindFramebuffer(gl.FRAMEBUFFER, chunk.textures.fbo)
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chunk.textures.read, 0)
-
-      // Read back current data
       gl.readPixels(0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, chunk.cpuData)
-
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
 
-      // Add ink to CPU buffer
+      // Add ink on top of existing
       cells.forEach(({ lx, ly, volume, colorIndex }) => {
         const tx = lx + ghost
         const ty = ly + ghost
         if (tx < 0 || tx >= texSize || ty < 0 || ty >= texSize) return
 
         const idx = (ty * texSize + tx) * 4
+        const existing = chunk.cpuData[idx]
 
-        // Add volume and ALWAYS set color (combat happens in shader)
-        const existingVolume = chunk.cpuData[idx]
-        const existingColor = Math.round(chunk.cpuData[idx + 3] * 8)
-        const newVolume = volume
-
-        if (existingVolume < 0.01 || existingColor === colorIndex) {
-          // Empty or same color - just add
-          chunk.cpuData[idx] = Math.min(FLUID_PARAMS.maxVolume * 1.8, existingVolume + newVolume)
-          chunk.cpuData[idx + 3] = colorIndex / 8.0
-        } else {
-          // Different color - COMBAT! New ink fights existing
-          const newTotal = existingVolume + newVolume
-          if (newVolume > existingVolume * 0.5) {
-            // New ink is strong enough to take over
-            chunk.cpuData[idx] = newVolume - existingVolume * 0.3  // Lose some in combat
-            chunk.cpuData[idx + 3] = colorIndex / 8.0
-          } else {
-            // Existing ink wins but loses some volume
-            chunk.cpuData[idx] = existingVolume - newVolume * 0.5
-          }
-        }
-        chunk.cpuData[idx + 1] = Math.min(1.0, chunk.cpuData[idx + 1] + 0.5) // source
+        // Accumulate volume, refresh source
+        chunk.cpuData[idx] = Math.min(FLUID_PARAMS.maxVolume * 1.5, existing + volume)
+        chunk.cpuData[idx + 1] = Math.min(0.8, chunk.cpuData[idx + 1] + 0.15)  // boost source
+        chunk.cpuData[idx + 3] = colorIndex / 8.0  // set color
       })
 
-      // Upload entire texture back
+      // Upload back to GPU
       gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, chunk.cpuData)
 
       chunk.dirty = true
-      chunk.cellCount += cells.size
+      chunk.cellCount = Math.max(chunk.cellCount, cells.size)
     })
 
     pendingInk.length = 0
@@ -645,92 +622,6 @@ export const createFluidWebGL = (canvas) => {
     const temp = chunk.textures.read
     chunk.textures.read = chunk.textures.write
     chunk.textures.write = temp
-  }
-
-  // Sync ghost cells between adjacent chunks (allows cross-chunk flow)
-  const syncGhostCells = () => {
-    const ghost = config.ghostCells
-    const size = config.size
-    const texSize = size + ghost * 2
-
-    chunks.forEach((chunk) => {
-      if (chunk.cellCount === 0 && !chunk.dirty) return
-
-      // Ensure CPU data exists
-      if (!chunk.cpuData) {
-        chunk.cpuData = new Float32Array(texSize * texSize * 4)
-      }
-
-      // Read current texture to CPU
-      gl.bindFramebuffer(gl.FRAMEBUFFER, chunk.textures.fbo)
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chunk.textures.read, 0)
-      gl.readPixels(0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, chunk.cpuData)
-
-      // Copy edges to neighboring chunks' ghost cells
-      const neighbors = [
-        { dx: 0, dy: -1, key: `${chunk.cx},${chunk.cy - 1}` },  // top
-        { dx: 0, dy: 1, key: `${chunk.cx},${chunk.cy + 1}` },   // bottom
-        { dx: -1, dy: 0, key: `${chunk.cx - 1},${chunk.cy}` },  // left
-        { dx: 1, dy: 0, key: `${chunk.cx + 1},${chunk.cy}` },   // right
-      ]
-
-      neighbors.forEach(({ dx, dy, key }) => {
-        const neighbor = chunks.get(key)
-        if (!neighbor) return
-        if (!neighbor.cpuData) {
-          neighbor.cpuData = new Float32Array(texSize * texSize * 4)
-          gl.bindFramebuffer(gl.FRAMEBUFFER, neighbor.textures.fbo)
-          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, neighbor.textures.read, 0)
-          gl.readPixels(0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, neighbor.cpuData)
-        }
-
-        // Copy edge row/column from chunk to neighbor's ghost cells
-        if (dy === -1) {
-          // Copy our top edge (row ghost) to neighbor's bottom ghost (row texSize-1)
-          for (let x = 0; x < texSize; x++) {
-            const srcIdx = (ghost * texSize + x) * 4
-            const dstIdx = ((texSize - 1) * texSize + x) * 4
-            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
-          }
-          neighbor.needsUpload = true
-        } else if (dy === 1) {
-          // Copy our bottom edge to neighbor's top ghost
-          for (let x = 0; x < texSize; x++) {
-            const srcIdx = ((texSize - 1 - ghost) * texSize + x) * 4
-            const dstIdx = (0 * texSize + x) * 4
-            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
-          }
-          neighbor.needsUpload = true
-        } else if (dx === -1) {
-          // Copy our left edge to neighbor's right ghost
-          for (let y = 0; y < texSize; y++) {
-            const srcIdx = (y * texSize + ghost) * 4
-            const dstIdx = (y * texSize + texSize - 1) * 4
-            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
-          }
-          neighbor.needsUpload = true
-        } else if (dx === 1) {
-          // Copy our right edge to neighbor's left ghost
-          for (let y = 0; y < texSize; y++) {
-            const srcIdx = (y * texSize + texSize - 1 - ghost) * 4
-            const dstIdx = (y * texSize + 0) * 4
-            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
-          }
-          neighbor.needsUpload = true
-        }
-      })
-    })
-
-    // Upload modified ghost cells back to GPU
-    chunks.forEach((chunk) => {
-      if (chunk.needsUpload && chunk.cpuData) {
-        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, chunk.cpuData)
-        chunk.needsUpload = false
-      }
-    })
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
   const simulate = (dt) => {
