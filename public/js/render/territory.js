@@ -1,8 +1,7 @@
 // Territory rendering - draws spread ink with combat effects and paper texture
 
-import { StrokeIntent } from '../game/ink-spread.js'
+import { StrokeIntent, FLUID_CONFIG } from '../game/ink-spread.js'
 
-// Draw territory as filled cells with watercolor effect
 export const drawTerritory = (ctx, sim, view) => {
   const territory = sim.getTerritory()
   if (territory.size === 0) return
@@ -10,17 +9,13 @@ export const drawTerritory = (ctx, sim, view) => {
   const cellSize = sim.getCellSize()
   const paperTexture = sim.getPaperTexture()
 
-  // Group cells by color for batch rendering
   const colorGroups = new Map()
   territory.forEach((cell, key) => {
     if (!cell.color) return
-    if (!colorGroups.has(cell.color)) {
-      colorGroups.set(cell.color, [])
-    }
+    if (!colorGroups.has(cell.color)) colorGroups.set(cell.color, [])
     colorGroups.get(cell.color).push({ key, cell })
   })
 
-  // Draw each color group with varying opacity based on strength and intent
   colorGroups.forEach((cells, color) => {
     ctx.fillStyle = color
 
@@ -28,32 +23,24 @@ export const drawTerritory = (ctx, sim, view) => {
       const pos = sim.fromGridKey(key)
       const texture = paperTexture.get(key)
 
-      // Calculate alpha based on strength, intent, and texture
-      let alpha = 0.3 + Math.min(0.4, cell.strength * 0.1)
+      const volume = cell.volume ?? cell.strength ?? 0.5
+      const volumeRatio = Math.min(1, volume / FLUID_CONFIG.maxVolume)
 
-      // Walls are more opaque
-      if (cell.intent === StrokeIntent.WALL) {
-        alpha = Math.min(0.8, alpha + 0.2)
-      }
+      let alpha = 0.25 + volumeRatio * 0.55
 
-      // Contested areas shimmer (vary alpha slightly)
+      if (cell.intent === StrokeIntent.WALL) alpha = Math.min(0.85, alpha + 0.15)
+
       if (texture?.contested > 0.5) {
-        alpha *= 0.8 + Math.sin(Date.now() / 200 + pos.x + pos.y) * 0.1
+        alpha *= 0.85 + Math.sin(Date.now() / 200 + pos.x + pos.y) * 0.08
       }
 
       ctx.globalAlpha = alpha
 
-      // Draw cell with slight size variation for organic look
-      const sizeVariation = 1 + (texture?.saturation || 0) * 0.1
-      const size = cellSize * sizeVariation
+      const sizeMultiplier = 0.85 + volumeRatio * 0.25
+      const size = cellSize * sizeMultiplier
 
-      ctx.beginPath()
-      ctx.rect(
-        pos.x - size / 2,
-        pos.y - size / 2,
-        size,
-        size
-      )
+      const radius = size * 0.25
+      roundedRect(ctx, pos.x - size / 2, pos.y - size / 2, size, size, radius)
       ctx.fill()
     })
   })
@@ -61,38 +48,22 @@ export const drawTerritory = (ctx, sim, view) => {
   ctx.globalAlpha = 1
 }
 
-// Draw spreading particles with glow effect
+const roundedRect = (ctx, x, y, w, h, r) => {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
+  ctx.lineTo(x + w, y + h - r)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
+  ctx.lineTo(x + r, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
+  ctx.lineTo(x, y + r)
+  ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
+}
+
 export const drawParticles = (ctx, sim, view) => {
-  const particles = sim.getParticles()
-  if (particles.length === 0) return
-
-  particles.forEach(p => {
-    if (p.radius >= p.maxRadius) return
-
-    // Particle glow - more intense for fresh particles
-    const freshness = 1 - (p.age / 5000)
-    const glowAlpha = Math.max(0.05, 0.2 * freshness)
-
-    ctx.globalAlpha = glowAlpha
-    ctx.fillStyle = p.color
-
-    // Draw expanding ring
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2)
-    ctx.fill()
-
-    // Inner glow for walls
-    if (p.intent === StrokeIntent.WALL) {
-      ctx.globalAlpha = glowAlpha * 0.5
-      ctx.strokeStyle = p.color
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, p.radius * 0.8, 0, Math.PI * 2)
-      ctx.stroke()
-    }
-  })
-
-  ctx.globalAlpha = 1
+  // Particles deprecated in fluid mode - volume cells handle spreading visuals
 }
 
 // Draw combat effects (sparks, splashes when colors collide)
@@ -253,7 +224,6 @@ export const drawAllTerritoryEffects = (ctx, sim, view) => {
   drawCombatEffects(ctx, sim, view)
 }
 
-// Debug stats overlay
 export const drawTerritoryStats = (ctx, sim, x, y) => {
   const stats = sim.getStats()
 
@@ -273,9 +243,9 @@ export const drawTerritoryStats = (ctx, sim, x, y) => {
     line++
   }
 
-  drawLine(`Particles: ${stats.activeParticles}/${stats.particleCount}`)
   drawLine(`Territory: ${stats.territoryCells} cells`)
-  drawLine(`Texture: ${stats.textureCells} cells`)
+  drawLine(`Active: ${stats.activeCells || 0} flowing`)
+  drawLine(`Total volume: ${(stats.totalVolume || 0).toFixed(1)}`)
   drawLine(`Combat FX: ${stats.combatEffects}`)
   drawLine(`---`)
 

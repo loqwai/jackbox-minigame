@@ -116,16 +116,9 @@ export const App = ({ roomId, peerId }) => {
   useStrokesSync(useCallback((s) => {
     strokes.current = s
 
-    // Handle stroke deletion - reset counter if strokes were cleared
+    // Handle stroke deletion - don't rebuild, just reset counter
+    // Territory persists independently of strokes now
     if (s.length < processedStrokeCount.current) {
-      processedStrokeCount.current = 0
-      // Rebuild simulation from remaining strokes
-      spreadSim.current = createSpreadSimulation()
-      s.forEach((stroke, idx) => {
-        if (stroke?.color && stroke.color !== '#ffffff' && stroke.points?.length >= 2) {
-          spreadSim.current.spawnFromStroke(stroke, `stroke-${idx}`)
-        }
-      })
       processedStrokeCount.current = s.length
     }
 
@@ -426,13 +419,15 @@ export const App = ({ roomId, peerId }) => {
     const color = erasing ? '#ffffff' : currentColorRef.current
 
     if (currentPoints.current.length > 0) {
-      const stroke = { points: currentPoints.current, color, size: brushSizeRef.current }
-      strokes.current.push(stroke)
-      yStrokes.push([{
-        ...stroke,
+      const stroke = {
+        points: [...currentPoints.current],
+        color,
+        size: brushSizeRef.current,
         timestamp: Date.now(),
         peerId
-      }])
+      }
+      strokes.current.push(stroke)
+      yStrokes.push([stroke])
       render()
     }
 
