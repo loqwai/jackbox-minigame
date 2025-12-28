@@ -42,6 +42,7 @@ npm test
 | Sync | WebSocket + y-durableobjects |
 | UI | Preact + htm (via ESM) |
 | Canvas | HTML5 Canvas 2D |
+| Fluid Sim | WebGL 2 Fragment Shaders |
 | Signaling | WebRTC DataChannels |
 | Testing | Vitest |
 
@@ -89,6 +90,64 @@ scripts/test/
 ├── multiplayer-sync.ts   # Multi-client tests
 ├── state-desync.ts       # Desync detection
 └── stroke-color-mutation.ts
+```
+
+## Fluid Ink System
+
+The game features a **Worldbox-style fluid simulation** where paint spreads organically across the canvas. Drawing creates ink that pools, flows, and claims territory.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   WebGL 2 Fluid System                   │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
+│  │ Chunk Mgr   │  │ Flow Shader │  │ Render Shader   │  │
+│  │ 128x128     │  │ 8-neighbor  │  │ Color palette   │  │
+│  │ sparse grid │  │ simulation  │  │ + glow effects  │  │
+│  └─────────────┘  └─────────────┘  └─────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `public/js/gpu/webgl-fluid.js` | WebGL 2 fluid simulation system |
+| `public/js/gpu/chunk-manager.js` | Sparse chunk allocation for infinite canvas |
+
+### How It Works
+
+1. **Chunked Architecture** - Canvas is divided into 128×128 cell chunks (1024px each). Only active chunks are simulated, enabling infinite canvas with bounded memory.
+
+2. **Flow Simulation (GLSL)** - Each frame, a fragment shader runs cellular automata:
+   - 8-directional flow (cardinal + diagonal)
+   - Impedance terrain from FBM noise creates organic shapes
+   - Pressure builds when blocked, causing ink to find alternate paths
+   - Colors fight when they meet (volume-based combat)
+
+3. **Ping-Pong Rendering** - Two textures per chunk swap each frame:
+   - Read from texture A → simulate → write to texture B → swap
+
+4. **Accumulating Ink** - Drawing over the same area reads back GPU state and adds volume, creating pooling effects.
+
+### Performance Optimizations
+
+- **Single iteration per frame** - Reduced from 4 for mobile
+- **2-octave FBM noise** - Simplified from 4 octaves
+- **128-cell chunks** - Smaller textures for faster uploads
+- **Per-cell uploads** - Avoids full texture reads when possible
+
+### Fluid Parameters
+
+```javascript
+{
+  flowRate: 0.35,        // Flow speed between cells
+  surfaceTension: 0.02,  // Minimum diff to trigger flow
+  sourceDecay: 0.999,    // How fast sources stop generating
+  sourceStrength: 0.06,  // Volume generated per frame
+  pressureMultiplier: 2.0 // Pressure boost when blocked
+}
 ```
 
 ## Game Mechanics
