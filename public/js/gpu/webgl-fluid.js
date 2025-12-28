@@ -7,11 +7,12 @@ const FLUID_PARAMS = {
   maxVolume: 1.0,
   minVolume: 0.001,
   flowRate: 0.35,           // Faster flow (compensate for fewer iterations)
-  surfaceTension: 0.02,     // Lower threshold = more spreading
-  sourceDecay: 0.999,       // Faster decay for mobile
+  surfaceTension: 0.008,    // Very low threshold - ink keeps flowing
+  sourceDecay: 0.995,       // Slower decay - sources stay active longer
   sourceStrength: 0.06,     // More volume from source
   pressureMultiplier: 2.0,  // More pressure-driven flow
   iterations: 1,            // Single pass for mobile performance
+  restlessness: 0.003,      // Prevents total equilibrium
 }
 
 // Map game colors to indices (must match PALETTE in shader)
@@ -79,6 +80,9 @@ uniform float u_surfaceTension;
 uniform float u_sourceDecay;
 uniform float u_sourceStrength;
 uniform float u_pressureMultiplier;
+uniform float u_restlessness;
+uniform int u_parity;  // 0 or 1 for checkerboard updates
+uniform float u_time;
 
 in vec2 v_uv;
 out vec4 fragColor;
@@ -103,9 +107,14 @@ bool isEmpty(vec4 cell) {
   return cell.r < u_minVolume;
 }
 
-// Simplex-like noise for organic flow perturbation
+// Deterministic hash for spatial "personality" - same position always gives same result
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// Multi-value hash for neighbor selection (returns 8 values 0-1)
+float hashN(vec2 p, int n) {
+  return fract(sin(dot(p + float(n) * 17.3, vec2(127.1, 311.7))) * 43758.5453);
 }
 
 float noise(vec2 p) {
@@ -132,33 +141,20 @@ float fbm(vec2 p) {
   return value;
 }
 
-// Get flow bias based on position (like terrain elevation)
-// Returns values that can BLOCK flow (0.0) or BOOST it (up to 2.0)
-vec4 getFlowBias(vec2 uv) {
-  vec2 worldPos = uv * u_resolution * 0.05;  // Larger scale for visible patterns
-
-  // Create terrain-like elevation
-  float elevation = fbm(worldPos);
-
-  // Sample elevation at neighbor positions
-  float elevUp = fbm(worldPos + vec2(0.0, 0.05));
-  float elevDown = fbm(worldPos + vec2(0.0, -0.05));
-  float elevLeft = fbm(worldPos + vec2(-0.05, 0.0));
-  float elevRight = fbm(worldPos + vec2(0.05, 0.0));
-
-  // Flow prefers going "downhill" - towards lower elevation
-  // If neighbor is higher, reduce flow; if lower, increase flow
-  float biasUp = 1.0 + (elevation - elevUp) * 3.0;
-  float biasDown = 1.0 + (elevation - elevDown) * 3.0;
-  float biasLeft = 1.0 + (elevation - elevLeft) * 3.0;
-  float biasRight = 1.0 + (elevation - elevRight) * 3.0;
-
-  // Clamp to prevent negative flow, allow boosted flow
-  return clamp(vec4(biasUp, biasDown, biasLeft, biasRight), 0.0, 2.5);
-}
-
 void main() {
+  // Checkerboard: only update cells matching current parity
+  // This breaks coherent wavefronts that create squares
+  vec2 cellPos = floor(v_uv * u_resolution);
+  int cellParity = int(mod(cellPos.x + cellPos.y, 2.0));
+
   vec4 cell = texture(u_state, v_uv);
+
+  // If parity doesn't match, just copy the cell unchanged
+  if (cellParity != u_parity) {
+    fragColor = cell;
+    return;
+  }
+
   float volume = cell.r;
   float source = cell.g;
   float pressure = cell.b;
@@ -180,12 +176,44 @@ void main() {
     neighbors[i] = sampleCell(offsets[i]);
   }
 
-  // Diagonal flow is slightly weaker (longer distance)
+  // Diagonal flow is weaker (1/√2 ≈ 0.707) to equalize effective speed
+  // This fixes the fundamental isotropy problem of square grids
   float flowStrength[8];
   flowStrength[0] = 1.0; flowStrength[1] = 1.0;
   flowStrength[2] = 1.0; flowStrength[3] = 1.0;
-  flowStrength[4] = 0.7; flowStrength[5] = 0.7;
-  flowStrength[6] = 0.7; flowStrength[7] = 0.7;
+  flowStrength[4] = 0.707; flowStrength[5] = 0.707;
+  flowStrength[6] = 0.707; flowStrength[7] = 0.707;
+
+  // Calculate volume gradient - which direction has the steepest drop
+  // This helps us bias flow to create rounder shapes
+  vec2 gradient = vec2(0.0);
+  for (int i = 0; i < 8; i++) {
+    gradient += offsets[i] * neighbors[i].r * flowStrength[i];
+  }
+  gradient = normalize(gradient + vec2(0.001)); // Avoid division by zero
+
+  // Radial flow bias: prefer flowing perpendicular to gradient (rounds edges)
+  // and in gradient direction (fills gaps), rather than along grid axes
+  float neighborBias[8];
+  for (int i = 0; i < 8; i++) {
+    vec2 dir = normalize(offsets[i]);
+
+    // How aligned is this direction with the gradient?
+    float gradAlign = dot(dir, gradient);
+
+    // How aligned with perpendicular (tangent)?
+    vec2 tangent = vec2(-gradient.y, gradient.x);
+    float tangentAlign = abs(dot(dir, tangent));
+
+    // Boost flow in gradient direction (fills gaps) and tangent (rounds edges)
+    // Reduce flow that would extend corners
+    float radialBias = 0.7 + gradAlign * 0.2 + tangentAlign * 0.3;
+
+    // Combine with spatial hash for deterministic variation
+    float spatialBias = 0.8 + hashN(cellPos * 0.1, i) * 0.4;
+
+    neighborBias[i] = radialBias * spatialBias;
+  }
 
   // Source generates volume over time
   if (source > u_minVolume) {
@@ -194,17 +222,18 @@ void main() {
   }
 
   // Get terrain properties - impedance controls flow speed
-  vec2 worldPos = v_uv * 8.0;  // Scale for nice-sized features
+  // Use cell position with prime-based offset to avoid grid alignment
+  vec2 noisePos = cellPos * 0.037 + vec2(hash(cellPos * 0.01) * 2.0, hash(cellPos * 0.013) * 2.0);
 
   // Impedance: 0.3 = fast flow (slippery), 1.0 = normal, 2.0 = slow (sticky)
-  float impedance = 0.5 + fbm(worldPos) * 1.5;
+  float impedance = 0.5 + fbm(noisePos) * 1.5;
 
   // Pre-calculate neighbor impedances for flow calculations
   float nImpedances[8];
-  float step = 8.0 / u_resolution.x;
   for (int i = 0; i < 8; i++) {
-    vec2 nWorldPos = worldPos + offsets[i] * step;
-    nImpedances[i] = 0.5 + fbm(nWorldPos) * 1.5;
+    vec2 nCellPos = cellPos + offsets[i];
+    vec2 nNoisePos = nCellPos * 0.037 + vec2(hash(nCellPos * 0.01) * 2.0, hash(nCellPos * 0.013) * 2.0);
+    nImpedances[i] = 0.5 + fbm(nNoisePos) * 1.5;
   }
 
   // CRITICAL: Empty cells must still receive inflow from neighbors
@@ -226,8 +255,8 @@ void main() {
       float flowSpeed = 1.0 / avgImpedance;  // Lower impedance = faster
 
       if (nVolume > u_surfaceTension * 2.0) {
-        float inflow = nVolume * 0.15 * nPressureBoost * flowStrength[i] * flowSpeed;
-        inflow = min(inflow, u_flowRate * u_dt * nPressureBoost * flowSpeed);
+        float inflow = nVolume * 0.15 * nPressureBoost * flowStrength[i] * flowSpeed * neighborBias[i];
+        inflow = min(inflow, u_flowRate * u_dt * nPressureBoost * flowSpeed * neighborBias[i]);
         totalInflow += inflow;
         if (inflow > maxInflow) {
           maxInflow = inflow;
@@ -279,8 +308,8 @@ void main() {
 
     float diff = volume - n.r;
     if (diff > u_surfaceTension) {
-      float toFlow = diff * 0.3 * pressureBoost * flowStrength[i] * flowSpeed;
-      toFlow = min(toFlow, baseFlow * flowStrength[i] * flowSpeed);
+      float toFlow = diff * 0.3 * pressureBoost * flowStrength[i] * flowSpeed * neighborBias[i];
+      toFlow = min(toFlow, baseFlow * flowStrength[i] * flowSpeed * neighborBias[i]);
       totalFlowOut += toFlow;
     }
   }
@@ -297,10 +326,52 @@ void main() {
     float diff = n.r - volume;
     if (diff > u_surfaceTension) {
       float nPressureBoost = 1.0 + n.b * (u_pressureMultiplier - 1.0);
-      float inflow = diff * 0.2 * nPressureBoost * flowStrength[i];
-      inflow = min(inflow, u_flowRate * u_dt * nPressureBoost);
+      float inflow = diff * 0.2 * nPressureBoost * flowStrength[i] * neighborBias[i];
+      inflow = min(inflow, u_flowRate * u_dt * nPressureBoost * neighborBias[i]);
       volume += inflow;
     }
+  }
+
+  // Diffusion pass: blend with neighbors to soften grid boundaries
+  // AGGRESSIVE diffusion at high volumes to prevent square boundaries
+  float baseRate = 0.08;
+  float highVolBoost = smoothstep(0.5, 0.9, volume) * 0.25;  // Up to 33% diffusion when full
+  float diffusionRate = baseRate + highVolBoost;
+
+  float neighborAvg = 0.0;
+  float sameColorCount = 0.0;
+  float minNeighborVol = 999.0;
+  float maxNeighborVol = 0.0;
+
+  for (int i = 0; i < 8; i++) {
+    vec4 n = neighbors[i];
+    if (colorsMatch(cell, n) || isEmpty(n)) {
+      neighborAvg += n.r * flowStrength[i];
+      sameColorCount += flowStrength[i];
+      if (!isEmpty(n) && colorsMatch(cell, n)) {
+        minNeighborVol = min(minNeighborVol, n.r);
+        maxNeighborVol = max(maxNeighborVol, n.r);
+      }
+    }
+  }
+
+  if (sameColorCount > 0.0) {
+    neighborAvg /= sameColorCount;
+
+    // Extra diffusion at boundaries (where there's high variance)
+    float variance = maxNeighborVol - minNeighborVol;
+    float boundaryBoost = smoothstep(0.1, 0.4, variance) * 0.15;
+
+    // Blend current volume toward neighbor average
+    volume = mix(volume, neighborAvg, diffusionRate + boundaryBoost);
+  }
+
+  // Restlessness: add subtle time-varying perturbation to prevent equilibrium
+  // This keeps ink flowing and prevents "beading" where blobs separate
+  if (volume > u_minVolume * 2.0) {
+    float wave = sin(u_time * 2.0 + cellPos.x * 0.3 + cellPos.y * 0.37) * 0.5 + 0.5;
+    float perturbation = (wave - 0.5) * u_restlessness * volume;
+    volume += perturbation;
   }
 
   // Clamp volume
@@ -310,7 +381,7 @@ void main() {
 }
 `
 
-// Render fragment shader - draws the fluid with nice visuals
+// Render fragment shader - draws the fluid with smooth contours
 const RENDER_SHADER = `#version 300 es
 precision highp float;
 
@@ -336,26 +407,79 @@ const vec3 PALETTE[8] = vec3[8](
   vec3(0.5, 0.5, 0.5)        // 7: unused
 );
 
+// Sample with color-aware 3x3 gaussian blur (only blurs same-color neighbors)
+vec4 sampleSmooth(vec2 uv, float texSize) {
+  float texel = 1.0 / texSize;
+
+  // Get center cell to determine which color to blur
+  vec4 center = texture(u_state, uv);
+  int centerColor = int(center.a * 8.0 + 0.5);
+
+  // 3x3 Gaussian kernel weights (sigma ~0.8)
+  float w[9];
+  w[0] = 0.0625; w[1] = 0.125; w[2] = 0.0625;
+  w[3] = 0.125;  w[4] = 0.25;  w[5] = 0.125;
+  w[6] = 0.0625; w[7] = 0.125; w[8] = 0.0625;
+
+  vec2 offsets[9];
+  offsets[0] = vec2(-1, -1); offsets[1] = vec2(0, -1); offsets[2] = vec2(1, -1);
+  offsets[3] = vec2(-1,  0); offsets[4] = vec2(0,  0); offsets[5] = vec2(1,  0);
+  offsets[6] = vec2(-1,  1); offsets[7] = vec2(0,  1); offsets[8] = vec2(1,  1);
+
+  float vol = 0.0;
+  float src = 0.0;
+  float prs = 0.0;
+  float totalWeight = 0.0;
+
+  for (int i = 0; i < 9; i++) {
+    vec4 s = texture(u_state, uv + offsets[i] * texel);
+    int sColor = int(s.a * 8.0 + 0.5);
+
+    // Only include same-color or empty cells in blur
+    if (sColor == centerColor || s.r < 0.001) {
+      vol += s.r * w[i];
+      src += s.g * w[i];
+      prs += s.b * w[i];
+      totalWeight += w[i];
+    }
+  }
+
+  // Normalize by actual weight used
+  if (totalWeight > 0.0) {
+    vol /= totalWeight;
+    src /= totalWeight;
+    prs /= totalWeight;
+  }
+
+  return vec4(vol, src, prs, center.a);
+}
+
 void main() {
   // Map UV to texture coordinates, accounting for ghost cells
   float texSize = u_chunkSize + u_ghostCells * 2.0;
   vec2 texUV = (v_uv * u_chunkSize + u_ghostCells) / texSize;
 
-  vec4 cell = texture(u_state, texUV);
+  // Use smooth bilinear sampling for organic edges
+  vec4 cell = sampleSmooth(texUV, texSize);
   float volume = cell.r;
   float source = cell.g;
   float pressure = cell.b;
   int colorIdx = int(cell.a * 8.0 + 0.5);
 
-  if (volume < 0.001) {
+  // Smooth threshold for organic edges (not hard 0.001 cutoff)
+  float edgeThreshold = 0.05;
+  if (volume < edgeThreshold * 0.1) {
     discard;
   }
+
+  // Smooth alpha falloff at edges
+  float edgeFade = smoothstep(edgeThreshold * 0.1, edgeThreshold, volume);
 
   vec3 color = colorIdx < 8 ? PALETTE[colorIdx] : vec3(0.5);
 
   // Volume affects opacity
   float volumeRatio = clamp(volume, 0.0, 1.0);
-  float alpha = 0.4 + volumeRatio * 0.5;
+  float alpha = (0.4 + volumeRatio * 0.5) * edgeFade;
 
   // Source cells glow
   if (source > 0.1) {
@@ -584,7 +708,8 @@ export const createFluidWebGL = (canvas) => {
     pendingInk.length = 0
   }
 
-  const simulateChunk = (chunk) => {
+  // Run one simulation pass for a chunk with given parity (0 or 1)
+  const simulateChunkPass = (chunk, parity) => {
     const size = chunk.textures.size
 
     // Bind FBO with write texture as target
@@ -605,6 +730,9 @@ export const createFluidWebGL = (canvas) => {
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_sourceDecay'), FLUID_PARAMS.sourceDecay)
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_sourceStrength'), FLUID_PARAMS.sourceStrength)
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_pressureMultiplier'), FLUID_PARAMS.pressureMultiplier)
+    gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_restlessness'), FLUID_PARAMS.restlessness)
+    gl.uniform1i(gl.getUniformLocation(flowProgram, 'u_parity'), parity)
+    gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_time'), time)
 
     // Bind read texture
     gl.activeTexture(gl.TEXTURE0)
@@ -618,22 +746,129 @@ export const createFluidWebGL = (canvas) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6)
 
-    // Swap textures
+    // Swap textures for next pass
     const temp = chunk.textures.read
     chunk.textures.read = chunk.textures.write
     chunk.textures.write = temp
   }
 
+  // Always create neighbor chunks for any chunk with ink
+  // Mark them dirty so they get simulated (allows ink to flow in)
+  const expandChunks = () => {
+    const activeChunks = Array.from(chunks.values()).filter(c => c.cellCount > 0 || c.dirty)
+
+    activeChunks.forEach(chunk => {
+      const { cx, cy } = chunk
+      // Create all 4 cardinal neighbors and mark them for simulation
+      const neighbors = [
+        getOrCreateChunk(cx - 1, cy),
+        getOrCreateChunk(cx + 1, cy),
+        getOrCreateChunk(cx, cy - 1),
+        getOrCreateChunk(cx, cy + 1),
+      ]
+      // Mark neighbors as dirty so they get simulated
+      // This allows ink to flow INTO them from the active chunk
+      neighbors.forEach(n => { n.dirty = true })
+    })
+  }
+
+  // Sync ghost cells between adjacent chunks so edges can "see" neighbors
+  // This fixes the issue where flow stops at chunk boundaries
+  const syncGhostCells = () => {
+    const ghost = config.ghostCells
+    const size = config.size
+    const texSize = size + ghost * 2
+
+    // Create temp framebuffers for reading if needed
+    if (!syncFBO) {
+      syncFBO = gl.createFramebuffer()
+    }
+
+    // First, expand chunks where ink is near edges
+    expandChunks()
+
+    chunks.forEach(chunk => {
+      const { cx, cy } = chunk
+
+      // Copy edge columns/rows from neighbors into this chunk's ghost cells
+      // Left neighbor: copy their right edge (col size) to our left ghost (col 0)
+      const leftKey = `${cx - 1},${cy}`
+      const leftChunk = chunks.get(leftKey)
+      if (leftChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, leftChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        // Copy from left chunk's right edge (x=size) to this chunk's left ghost (x=0)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, ghost, size, ghost, ghost, size)
+      }
+
+      // Right neighbor: copy their left edge (col ghost) to our right ghost (col size+ghost)
+      const rightKey = `${cx + 1},${cy}`
+      const rightChunk = chunks.get(rightKey)
+      if (rightChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rightChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        // Copy from right chunk's left edge (x=ghost) to this chunk's right ghost (x=size+ghost)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, size + ghost, ghost, ghost, ghost, ghost, size)
+      }
+
+      // Top neighbor: copy their bottom edge (row size) to our top ghost (row 0)
+      const topKey = `${cx},${cy - 1}`
+      const topChunk = chunks.get(topKey)
+      if (topChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, topChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        // Copy from top chunk's bottom edge (y=size) to this chunk's top ghost (y=0)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, ghost, 0, ghost, size, size, ghost)
+      }
+
+      // Bottom neighbor: copy their top edge (row ghost) to our bottom ghost (row size+ghost)
+      const bottomKey = `${cx},${cy + 1}`
+      const bottomChunk = chunks.get(bottomKey)
+      if (bottomChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, bottomChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        // Copy from bottom chunk's top edge (y=ghost) to this chunk's bottom ghost (y=size+ghost)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, ghost, size + ghost, ghost, ghost, size, ghost)
+      }
+    })
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+  }
+
+  let syncFBO = null
+
   const simulate = (dt) => {
     flushPendingInk()
     time += dt
 
-    // Run multiple simulation iterations per frame for faster spreading
+    // Sync ghost cells from neighboring chunks before simulation
+    // This allows flow to cross chunk boundaries
+    syncGhostCells()
+
+    // Run simulation with checkerboard pattern:
+    // Pass 1: update cells where (x+y) % 2 == 0
+    // Pass 2: update cells where (x+y) % 2 == 1
+    // This breaks coherent wavefronts that create square patterns
     const iterations = FLUID_PARAMS.iterations || 1
     for (let i = 0; i < iterations; i++) {
+      // Parity 0 pass - update "even" cells
       chunks.forEach(chunk => {
         if (chunk.cellCount > 0 || chunk.dirty) {
-          simulateChunk(chunk)
+          simulateChunkPass(chunk, 0)
+        }
+      })
+
+      // Sync again between parity passes for better cross-chunk flow
+      syncGhostCells()
+
+      // Parity 1 pass - update "odd" cells (neighbors just updated!)
+      chunks.forEach(chunk => {
+        if (chunk.cellCount > 0 || chunk.dirty) {
+          simulateChunkPass(chunk, 1)
           chunk.dirty = false
         }
       })
