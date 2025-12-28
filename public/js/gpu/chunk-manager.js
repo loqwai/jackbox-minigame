@@ -6,7 +6,7 @@ export const CHUNK_CONFIG = {
   cellSize: 8,            // World pixels per cell
   maxActiveChunks: 50,    // Memory limit
   unloadDelay: 3000,      // Faster cleanup for mobile
-  ghostCells: 1,          // Border cells for edge flow
+  ghostCells: 2,          // Border cells for edge flow (2 for better sync)
 }
 
 export const createChunkManager = (device, config = CHUNK_CONFIG) => {

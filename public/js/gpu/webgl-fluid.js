@@ -8,11 +8,12 @@ const FLUID_PARAMS = {
   minVolume: 0.001,
   flowRate: 0.35,           // Faster flow (compensate for fewer iterations)
   surfaceTension: 0.008,    // Very low threshold - ink keeps flowing
-  sourceDecay: 0.995,       // Slower decay - sources stay active longer
+  sourceDecay: 0.98,        // Faster decay - sources dry out
   sourceStrength: 0.06,     // More volume from source
   pressureMultiplier: 2.0,  // More pressure-driven flow
   iterations: 1,            // Single pass for mobile performance
-  restlessness: 0.003,      // Prevents total equilibrium
+  restlessness: 0.002,      // Subtle movement (reduced)
+  evaporation: 0.9995,      // Ink slowly dries out (volume *= this each frame)
 }
 
 // Map game colors to indices (must match PALETTE in shader)
@@ -81,6 +82,7 @@ uniform float u_sourceDecay;
 uniform float u_sourceStrength;
 uniform float u_pressureMultiplier;
 uniform float u_restlessness;
+uniform float u_evaporation;
 uniform int u_parity;  // 0 or 1 for checkerboard updates
 uniform float u_time;
 
@@ -374,8 +376,12 @@ void main() {
     volume += perturbation;
   }
 
+  // Evaporation: ink slowly dries out over time
+  // This prevents infinite growth and creates natural boundaries
+  volume *= u_evaporation;
+
   // Clamp volume
-  volume = clamp(volume, 0.0, u_maxVolume * 1.8);
+  volume = clamp(volume, 0.0, u_maxVolume * 1.2);
 
   fragColor = vec4(volume, source, pressure, colorIdx);
 }
@@ -731,6 +737,7 @@ export const createFluidWebGL = (canvas) => {
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_sourceStrength'), FLUID_PARAMS.sourceStrength)
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_pressureMultiplier'), FLUID_PARAMS.pressureMultiplier)
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_restlessness'), FLUID_PARAMS.restlessness)
+    gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_evaporation'), FLUID_PARAMS.evaporation)
     gl.uniform1i(gl.getUniformLocation(flowProgram, 'u_parity'), parity)
     gl.uniform1f(gl.getUniformLocation(flowProgram, 'u_time'), time)
 
@@ -768,7 +775,31 @@ export const createFluidWebGL = (canvas) => {
       ]
       // Mark neighbors as dirty so they get simulated
       // This allows ink to flow INTO them from the active chunk
-      neighbors.forEach(n => { n.dirty = true })
+      neighbors.forEach(n => {
+        n.dirty = true
+        n.emptyFrames = 0  // Reset empty counter
+      })
+    })
+  }
+
+  // Clean up chunks that have been empty for too long
+  let cleanupCounter = 0
+  const cleanupEmptyChunks = () => {
+    cleanupCounter++
+    if (cleanupCounter < 60) return  // Only cleanup every ~1 second
+    cleanupCounter = 0
+
+    chunks.forEach((chunk, key) => {
+      if (chunk.cellCount === 0 && !chunk.dirty) {
+        chunk.emptyFrames = (chunk.emptyFrames || 0) + 1
+        // Delete chunks empty for 3+ seconds
+        if (chunk.emptyFrames > 180) {
+          gl.deleteTexture(chunk.textures.read)
+          gl.deleteTexture(chunk.textures.write)
+          gl.deleteFramebuffer(chunk.textures.fbo)
+          chunks.delete(key)
+        }
+      }
     })
   }
 
@@ -834,6 +865,47 @@ export const createFluidWebGL = (canvas) => {
         // Copy from bottom chunk's top edge (y=ghost) to this chunk's bottom ghost (y=size+ghost)
         gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, ghost, size + ghost, ghost, ghost, size, ghost)
       }
+
+      // Diagonal corners - needed for 8-directional flow
+      // Top-left corner
+      const tlKey = `${cx - 1},${cy - 1}`
+      const tlChunk = chunks.get(tlKey)
+      if (tlChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tlChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, size, size, ghost, ghost)
+      }
+
+      // Top-right corner
+      const trKey = `${cx + 1},${cy - 1}`
+      const trChunk = chunks.get(trKey)
+      if (trChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, trChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, size + ghost, 0, ghost, size, ghost, ghost)
+      }
+
+      // Bottom-left corner
+      const blKey = `${cx - 1},${cy + 1}`
+      const blChunk = chunks.get(blKey)
+      if (blChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, size + ghost, size, ghost, ghost, ghost)
+      }
+
+      // Bottom-right corner
+      const brKey = `${cx + 1},${cy + 1}`
+      const brChunk = chunks.get(brKey)
+      if (brChunk) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, syncFBO)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, brChunk.textures.read, 0)
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, size + ghost, size + ghost, ghost, ghost, ghost, ghost)
+      }
     })
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -873,6 +945,9 @@ export const createFluidWebGL = (canvas) => {
         }
       })
     }
+
+    // Periodically clean up chunks that have been empty
+    cleanupEmptyChunks()
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
@@ -933,7 +1008,9 @@ export const createFluidWebGL = (canvas) => {
       for (let cy = minCy; cy <= maxCy; cy++) {
         const key = `${cx},${cy}`
         const chunk = chunks.get(key)
-        if (!chunk || chunk.cellCount === 0) continue
+        if (!chunk) continue
+        // Render ALL existing chunks - ink can flow in from neighbors
+        // even if cellCount is 0 (shader discards empty pixels anyway)
 
         gl.uniform2f(gl.getUniformLocation(renderProgram, 'u_chunkWorldPos'), chunk.worldOrigin.x, chunk.worldOrigin.y)
         gl.uniform1f(gl.getUniformLocation(renderProgram, 'u_chunkWorldSize'), chunkWorldSize)
