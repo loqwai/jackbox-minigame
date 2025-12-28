@@ -146,9 +146,33 @@ Currently 8 colors. Do they have different properties?
 - Different: blue spreads faster, red fights harder, green holds ground
 - Player choice: pick your color at game start
 
+## Implementation Status
+
+### Completed
+
+1. **Spreading mechanic** - WebGL 2 fluid simulation with 8-directional cellular automata flow
+2. **Spread rate tuning** - Configurable via FLUID_PARAMS (flowRate, surfaceTension, etc.)
+3. **Ink collision** - Colors push against each other, can't blend. Stronger ink wins territory.
+4. **Evaporation** - Ink dries out over time (~80 seconds to 8% volume) to prevent infinite growth
+5. **Organic shapes** - Radial flow bias + FBM impedance terrain + checkerboard updates
+6. **Infinite canvas** - Sparse chunk allocation (128x128 cells each, ~1024px)
+7. **Mobile performance** - Single iteration, 2-octave noise, 50 chunk limit
+8. **Ghost cell sync** - 2-cell border + diagonal corners for seamless chunk boundaries
+9. **Deterministic** - Position-based hashes for multiplayer sync compatibility
+
+### Open Questions (Still Relevant)
+
+- **Idle Spreading** - Currently spreads indefinitely but evaporates. Balance TBD.
+- **AI Enemies** - Not yet integrated with fluid system
+- **Visibility / Fog of War** - Not implemented
+- **Paint Economy** - Drawing costs paint, spreading is fire-and-forget
+- **Color Meaning** - All colors behave the same, just different team identity
+
+See [FLUID_INK_SYSTEM.md](./FLUID_INK_SYSTEM.md) for technical details.
+
 ## Next Steps
 
-1. **Prototype the spreading mechanic** - this is everything. Get ink bleeding working and see how it feels.
-2. **Tune the spread rate** - find the sweet spot between responsive and strategic.
-3. **Add ink collision** - when two colors meet, make them fight.
-4. **Test with family** - is this fun? What's missing?
+1. **Integrate with game mode** - Connect fluid territory to scoring/win conditions
+2. **AI enemy interaction** - Enemies could destroy ink or be blocked by thick lines
+3. **Test with family** - Is this fun? What's missing?
+4. **Fog of war** - Only see areas your ink has spread to

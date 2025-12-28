@@ -142,13 +142,17 @@ The game features a **Worldbox-style fluid simulation** where paint spreads orga
 
 ```javascript
 {
-  flowRate: 0.35,        // Flow speed between cells
-  surfaceTension: 0.02,  // Minimum diff to trigger flow
-  sourceDecay: 0.999,    // How fast sources stop generating
-  sourceStrength: 0.06,  // Volume generated per frame
-  pressureMultiplier: 2.0 // Pressure boost when blocked
+  flowRate: 0.35,          // Flow speed between cells
+  surfaceTension: 0.008,   // Minimum diff to trigger flow
+  sourceDecay: 0.98,       // How fast sources stop generating
+  sourceStrength: 0.06,    // Volume generated per frame
+  pressureMultiplier: 2.0, // Pressure boost when blocked
+  evaporation: 0.9995,     // Ink dries out over time
+  restlessness: 0.002,     // Subtle time-varying motion
 }
 ```
+
+For full technical details, see [docs/FLUID_INK_SYSTEM.md](docs/FLUID_INK_SYSTEM.md).
 
 ## Game Mechanics
 

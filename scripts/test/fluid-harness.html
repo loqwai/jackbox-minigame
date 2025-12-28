@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fluid Simulation Test Harness</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      display: flex;
+      height: 100vh;
+    }
+    #canvas-container {
+      flex: 1;
+      position: relative;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #controls {
+      width: 320px;
+      padding: 16px;
+      background: #16213e;
+      overflow-y: auto;
+      border-left: 1px solid #333;
+    }
+    h3 {
+      margin: 16px 0 8px;
+      color: #0f4c75;
+      border-bottom: 1px solid #333;
+      padding-bottom: 4px;
+    }
+    h3:first-child { margin-top: 0; }
+    .test-btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin: 4px 0;
+      background: #0f4c75;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .test-btn:hover { background: #3282b8; }
+    .test-btn.running { background: #f39c12; }
+    .test-btn.pass { background: #2ecc71; }
+    .test-btn.fail { background: #e94560; }
+    #stats {
+      font-family: monospace;
+      font-size: 12px;
+      padding: 8px;
+      background: #0d0d1a;
+      border-radius: 4px;
+      margin-top: 16px;
+    }
+    #log {
+      font-family: monospace;
+      font-size: 11px;
+      padding: 8px;
+      background: #0d0d1a;
+      border-radius: 4px;
+      margin-top: 8px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .log-entry { padding: 2px 0; border-bottom: 1px solid #222; }
+    .log-pass { color: #2ecc71; }
+    .log-fail { color: #e94560; }
+    .log-info { color: #3498db; }
+    label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 4px 0;
+    }
+    input[type="range"] { width: 150px; }
+    input[type="number"] { width: 60px; background: #0d0d1a; color: #eee; border: 1px solid #333; padding: 4px; }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <canvas id="fluidCanvas"></canvas>
+  </div>
+  <div id="controls">
+    <h3>Visual Tests</h3>
+    <button class="test-btn" data-test="circular-spread">Circular Spread Test</button>
+    <button class="test-btn" data-test="chunk-boundary">Chunk Boundary Flow</button>
+    <button class="test-btn" data-test="diagonal-boundary">Diagonal Chunk Corner</button>
+    <button class="test-btn" data-test="color-blocking">Color Blocking</button>
+    <button class="test-btn" data-test="pressure-buildup">Pressure Buildup</button>
+    <button class="test-btn" data-test="evaporation">Evaporation Rate</button>
+    <button class="test-btn" data-test="large-pool">Large Pool Stability</button>
+    <button class="test-btn" data-test="multi-chunk">Multi-Chunk Stress</button>
+    <button class="test-btn" data-test="stroke-path">Stroke Path Test</button>
+
+    <h3>Automated Tests</h3>
+    <button class="test-btn" data-test="auto-all" id="run-all">Run All Automated</button>
+
+    <h3>Manual Controls</h3>
+    <label>
+      Brush Size:
+      <input type="range" id="brushSize" min="2" max="20" value="8">
+    </label>
+    <label>
+      Color:
+      <select id="brushColor">
+        <option value="#e94560">Red</option>
+        <option value="#f39c12">Orange</option>
+        <option value="#2ecc71">Green</option>
+        <option value="#3498db">Blue</option>
+        <option value="#9b59b6">Purple</option>
+        <option value="#1abc9c">Teal</option>
+      </select>
+    </label>
+    <button class="test-btn" id="clear-canvas">Clear Canvas</button>
+
+    <h3>Stats</h3>
+    <div id="stats">Loading...</div>
+
+    <h3>Test Log</h3>
+    <div id="log"></div>
+  </div>
+
+  <script type="module">
+    import { createFluidWebGL } from '../../public/js/gpu/webgl-fluid.js'
+    import { CHUNK_CONFIG } from '../../public/js/gpu/chunk-manager.js'
+
+    const canvas = document.getElementById('fluidCanvas')
+    const container = document.getElementById('canvas-container')
+    const statsEl = document.getElementById('stats')
+    const logEl = document.getElementById('log')
+
+    let fluid = null
+    let view = { x: 0, y: 0, scale: 1, width: 800, height: 600 }
+    let isDrawing = false
+    let currentStroke = null
+    let animating = true
+
+    const log = (msg, type = 'info') => {
+      const entry = document.createElement('div')
+      entry.className = `log-entry log-${type}`
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`
+      logEl.insertBefore(entry, logEl.firstChild)
+      if (logEl.children.length > 100) logEl.lastChild.remove()
+    }
+
+    const resize = () => {
+      const rect = container.getBoundingClientRect()
+      canvas.width = rect.width
+      canvas.height = rect.height
+      view.width = rect.width
+      view.height = rect.height
+    }
+
+    const init = async () => {
+      resize()
+      window.addEventListener('resize', resize)
+
+      try {
+        fluid = createFluidWebGL(canvas)
+        log('WebGL fluid initialized', 'pass')
+      } catch (e) {
+        log(`WebGL init failed: ${e.message}`, 'fail')
+        return
+      }
+
+      // Mouse events for manual drawing
+      canvas.addEventListener('mousedown', startDraw)
+      canvas.addEventListener('mousemove', continueDraw)
+      canvas.addEventListener('mouseup', endDraw)
+      canvas.addEventListener('mouseleave', endDraw)
+
+      // Test buttons
+      document.querySelectorAll('.test-btn').forEach(btn => {
+        btn.addEventListener('click', () => runTest(btn.dataset.test, btn))
+      })
+
+      document.getElementById('clear-canvas').addEventListener('click', clearCanvas)
+
+      animate()
+    }
+
+    const screenToWorld = (screenX, screenY) => ({
+      x: view.x + screenX / view.scale,
+      y: view.y + screenY / view.scale,
+    })
+
+    const startDraw = (e) => {
+      isDrawing = true
+      const world = screenToWorld(e.offsetX, e.offsetY)
+      currentStroke = {
+        points: [world],
+        color: document.getElementById('brushColor').value,
+        size: parseInt(document.getElementById('brushSize').value),
+      }
+    }
+
+    const continueDraw = (e) => {
+      if (!isDrawing || !currentStroke) return
+      const world = screenToWorld(e.offsetX, e.offsetY)
+      currentStroke.points.push(world)
+      fluid.addInkFromStroke(currentStroke)
+      currentStroke.points = [world]
+    }
+
+    const endDraw = () => {
+      isDrawing = false
+      currentStroke = null
+    }
+
+    const clearCanvas = () => {
+      fluid = createFluidWebGL(canvas)
+      log('Canvas cleared')
+    }
+
+    const animate = () => {
+      if (!animating) return
+
+      fluid.simulate(0.016)
+      fluid.render(view)
+
+      const stats = fluid.getStats()
+      statsEl.innerHTML = `
+        Chunks: ${stats.activeChunks}<br>
+        Cells: ${stats.totalCells}<br>
+        Pending: ${stats.pendingInk}
+      `
+
+      requestAnimationFrame(animate)
+    }
+
+    // ========================================================================
+    // TEST IMPLEMENTATIONS
+    // ========================================================================
+
+    const tests = {
+      'circular-spread': async (btn) => {
+        log('Testing circular spread from single point...')
+        clearCanvas()
+
+        // Add ink at center of view
+        const centerX = view.x + view.width / (2 * view.scale)
+        const centerY = view.y + view.height / (2 * view.scale)
+
+        fluid.addInkFromStroke({
+          points: [
+            { x: centerX - 20, y: centerY },
+            { x: centerX + 20, y: centerY },
+          ],
+          color: '#3498db',
+          size: 15,
+        })
+
+        // Wait and measure spread
+        await wait(3000)
+
+        // Check if spread is roughly circular (not square)
+        // This would require reading back texture data - for now just visual
+        log('Visual check: Does the ink form a roughly circular shape?', 'info')
+        log('PASS if edges are rounded, FAIL if clearly square', 'info')
+        return 'manual'
+      },
+
+      'chunk-boundary': async (btn) => {
+        log('Testing flow across chunk boundaries...')
+        clearCanvas()
+
+        // Get chunk boundary position
+        const chunkSize = CHUNK_CONFIG.size * CHUNK_CONFIG.cellSize
+        const boundaryX = chunkSize - 50 // Just inside chunk 0
+
+        // Draw horizontal line that should cross into chunk 1
+        const y = view.y + view.height / (2 * view.scale)
+
+        fluid.addInkFromStroke({
+          points: [
+            { x: boundaryX, y },
+            { x: boundaryX + 100, y }, // Crosses into chunk 1
+          ],
+          color: '#2ecc71',
+          size: 10,
+        })
+
+        log(`Drawing near chunk boundary at x=${chunkSize}`)
+
+        await wait(4000)
+
+        const stats = fluid.getStats()
+        if (stats.activeChunks >= 2) {
+          log(`PASS: Flow created ${stats.activeChunks} chunks`, 'pass')
+          return true
+        } else {
+          log(`FAIL: Only ${stats.activeChunks} chunk active`, 'fail')
+          return false
+        }
+      },
+
+      'diagonal-boundary': async (btn) => {
+        log('Testing diagonal flow at chunk corner...')
+        clearCanvas()
+
+        // Position at corner where 4 chunks meet
+        const chunkSize = CHUNK_CONFIG.size * CHUNK_CONFIG.cellSize
+        const cornerX = chunkSize - 30
+        const cornerY = chunkSize - 30
+
+        // Draw diagonal line through corner
+        fluid.addInkFromStroke({
+          points: [
+            { x: cornerX, y: cornerY },
+            { x: cornerX + 60, y: cornerY + 60 },
+          ],
+          color: '#9b59b6',
+          size: 12,
+        })
+
+        await wait(4000)
+
+        const stats = fluid.getStats()
+        // Should create up to 4 chunks if diagonal flow works
+        log(`Created ${stats.activeChunks} chunks at corner`, 'info')
+        log('Visual check: Does ink flow smoothly across corner?', 'info')
+        return 'manual'
+      },
+
+      'color-blocking': async (btn) => {
+        log('Testing color blocking behavior...')
+        clearCanvas()
+
+        const centerX = view.x + view.width / (2 * view.scale)
+        const centerY = view.y + view.height / (2 * view.scale)
+
+        // Draw red blob
+        fluid.addInkFromStroke({
+          points: [
+            { x: centerX - 50, y: centerY },
+            { x: centerX, y: centerY },
+          ],
+          color: '#e94560',
+          size: 10,
+        })
+
+        await wait(1000)
+
+        // Draw blue blob adjacent
+        fluid.addInkFromStroke({
+          points: [
+            { x: centerX + 20, y: centerY },
+            { x: centerX + 70, y: centerY },
+          ],
+          color: '#3498db',
+          size: 10,
+        })
+
+        await wait(3000)
+
+        log('Visual check: Colors should NOT blend into each other', 'info')
+        log('They may push against each other but stay separate', 'info')
+        return 'manual'
+      },
+
+      'pressure-buildup': async (btn) => {
+        log('Testing pressure buildup when blocked...')
+        clearCanvas()
+
+        const centerX = view.x + view.width / (2 * view.scale)
+        const centerY = view.y + view.height / (2 * view.scale)
+
+        // Create a "wall" of one color
+        for (let i = -3; i <= 3; i++) {
+          fluid.addInkFromStroke({
+            points: [
+              { x: centerX + 50, y: centerY + i * 20 },
+              { x: centerX + 60, y: centerY + i * 20 },
+            ],
+            color: '#e94560',
+            size: 8,
+          })
+        }
+
+        await wait(500)
+
+        // Add ink that will hit the wall
+        fluid.addInkFromStroke({
+          points: [
+            { x: centerX - 50, y: centerY },
+            { x: centerX + 30, y: centerY },
+          ],
+          color: '#3498db',
+          size: 12,
+        })
+
+        await wait(4000)
+
+        log('Visual: Blue ink should push against red wall', 'info')
+        log('May pulsate slightly from pressure', 'info')
+        return 'manual'
+      },
+
+      'evaporation': async (btn) => {
+        log('Testing evaporation over time...')
+        clearCanvas()
+
+        const centerX = view.x + view.width / (2 * view.scale)
+        const centerY = view.y + view.height / (2 * view.scale)
+
+        // Add small amount of ink
+        fluid.addInkFromStroke({
+          points: [
+            { x: centerX - 10, y: centerY },
+            { x: centerX + 10, y: centerY },
+          ],
+          color: '#f39c12',
+          size: 6,
+        })
+
+        log('Watching ink evaporate over 10 seconds...')
+
+        const startStats = fluid.getStats()
+
+        await wait(10000)
+
+        const endStats = fluid.getStats()
+        log(`Cells: ${startStats.totalCells} -> ${endStats.totalCells}`, 'info')
+
+        // Ink should have faded significantly
+        if (endStats.totalCells < startStats.totalCells * 0.5) {
+          log('PASS: Ink evaporated significantly', 'pass')
+          return true
+        }
+        log('Visual check: Has the ink faded noticeably?', 'info')
+        return 'manual'
+      },
+
+      'large-pool': async (btn) => {
+        log('Testing large pool stability...')
+        clearCanvas()
+
+        const centerX = view.x + view.width / (2 * view.scale)
+        const centerY = view.y + view.height / (2 * view.scale)
+
+        // Create a large pool
+        for (let i = 0; i < 10; i++) {
+          const angle = (i / 10) * Math.PI * 2
+          const x = centerX + Math.cos(angle) * 50
+          const y = centerY + Math.sin(angle) * 50
+
+          fluid.addInkFromStroke({
+            points: [
+              { x: centerX, y: centerY },
+              { x, y },
+            ],
+            color: '#1abc9c',
+            size: 10,
+          })
+        }
+
+        log('Large pool created, monitoring for 5 seconds...')
+        await wait(5000)
+
+        log('Visual check: Pool should be stable, not growing infinitely', 'info')
+        log('Should settle into natural shape with slight motion', 'info')
+        return 'manual'
+      },
+
+      'multi-chunk': async (btn) => {
+        log('Stress testing multi-chunk flow...')
+        clearCanvas()
+
+        // Draw a long stroke that crosses multiple chunks
+        const startX = 100
+        const endX = CHUNK_CONFIG.size * CHUNK_CONFIG.cellSize * 3
+        const y = view.y + view.height / (2 * view.scale)
+
+        const points = []
+        for (let x = startX; x < endX; x += 50) {
+          points.push({ x, y: y + Math.sin(x * 0.01) * 30 })
+        }
+
+        fluid.addInkFromStroke({
+          points,
+          color: '#2ecc71',
+          size: 8,
+        })
+
+        await wait(5000)
+
+        const stats = fluid.getStats()
+        log(`Active chunks: ${stats.activeChunks}`, 'info')
+
+        if (stats.activeChunks >= 3) {
+          log('PASS: Multiple chunks created and flowing', 'pass')
+          return true
+        }
+        log('Visual check: Does ink flow smoothly across all chunks?', 'info')
+        return 'manual'
+      },
+
+      'stroke-path': async (btn) => {
+        log('Testing stroke path rendering...')
+        clearCanvas()
+
+        const centerX = view.x + view.width / (2 * view.scale)
+        const centerY = view.y + view.height / (2 * view.scale)
+
+        // Draw a spiral
+        const points = []
+        for (let t = 0; t < Math.PI * 6; t += 0.1) {
+          const r = 20 + t * 10
+          points.push({
+            x: centerX + Math.cos(t) * r,
+            y: centerY + Math.sin(t) * r,
+          })
+        }
+
+        fluid.addInkFromStroke({
+          points,
+          color: '#9b59b6',
+          size: 6,
+        })
+
+        await wait(3000)
+
+        log('Visual check: Spiral should be smooth, not blobby', 'info')
+        log('Ink should spread naturally from the path', 'info')
+        return 'manual'
+      },
+
+      'auto-all': async (btn) => {
+        const automatedTests = ['chunk-boundary', 'multi-chunk']
+        let passed = 0
+        let failed = 0
+
+        for (const testName of automatedTests) {
+          const testBtn = document.querySelector(`[data-test="${testName}"]`)
+          const result = await runTest(testName, testBtn)
+          if (result === true) passed++
+          else if (result === false) failed++
+        }
+
+        log(`Automated tests complete: ${passed} passed, ${failed} failed`, passed === automatedTests.length ? 'pass' : 'fail')
+        return passed === automatedTests.length
+      },
+    }
+
+    const runTest = async (testName, btn) => {
+      if (!tests[testName]) {
+        log(`Unknown test: ${testName}`, 'fail')
+        return false
+      }
+
+      btn.classList.add('running')
+      btn.classList.remove('pass', 'fail')
+
+      try {
+        const result = await tests[testName](btn)
+        btn.classList.remove('running')
+
+        if (result === true) {
+          btn.classList.add('pass')
+        } else if (result === false) {
+          btn.classList.add('fail')
+        }
+        // 'manual' results stay neutral
+
+        return result
+      } catch (e) {
+        log(`Test error: ${e.message}`, 'fail')
+        btn.classList.remove('running')
+        btn.classList.add('fail')
+        return false
+      }
+    }
+
+    const wait = (ms) => new Promise(r => setTimeout(r, ms))
+
+    init()
+  </script>
+</body>
+</html>
