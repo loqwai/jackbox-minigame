@@ -6,11 +6,12 @@ import { CHUNK_CONFIG } from './chunk-manager.js'
 const FLUID_PARAMS = {
   maxVolume: 1.0,
   minVolume: 0.001,
-  flowRate: 0.12,
-  surfaceTension: 0.06,
-  sourceDecay: 0.997,
-  sourceStrength: 0.02,
-  pressureMultiplier: 1.5,
+  flowRate: 0.25,           // Faster flow
+  surfaceTension: 0.02,     // Lower threshold = more spreading
+  sourceDecay: 0.9995,      // Slower decay = longer generation
+  sourceStrength: 0.04,     // More volume from source
+  pressureMultiplier: 2.0,  // More pressure-driven flow
+  iterations: 4,            // Multiple sim passes per frame
 }
 
 // Map game colors to indices (must match PALETTE in shader)
@@ -102,6 +103,61 @@ bool isEmpty(vec4 cell) {
   return cell.r < u_minVolume;
 }
 
+// Simplex-like noise for organic flow perturbation
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);  // Smoothstep
+
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Fractal brownian motion for multi-scale noise
+float fbm(vec2 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 4; i++) {
+    value += amplitude * noise(p);
+    p *= 2.0;
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
+// Get flow bias based on position (like terrain elevation)
+// Returns values that can BLOCK flow (0.0) or BOOST it (up to 2.0)
+vec4 getFlowBias(vec2 uv) {
+  vec2 worldPos = uv * u_resolution * 0.05;  // Larger scale for visible patterns
+
+  // Create terrain-like elevation
+  float elevation = fbm(worldPos);
+
+  // Sample elevation at neighbor positions
+  float elevUp = fbm(worldPos + vec2(0.0, 0.05));
+  float elevDown = fbm(worldPos + vec2(0.0, -0.05));
+  float elevLeft = fbm(worldPos + vec2(-0.05, 0.0));
+  float elevRight = fbm(worldPos + vec2(0.05, 0.0));
+
+  // Flow prefers going "downhill" - towards lower elevation
+  // If neighbor is higher, reduce flow; if lower, increase flow
+  float biasUp = 1.0 + (elevation - elevUp) * 3.0;
+  float biasDown = 1.0 + (elevation - elevDown) * 3.0;
+  float biasLeft = 1.0 + (elevation - elevLeft) * 3.0;
+  float biasRight = 1.0 + (elevation - elevRight) * 3.0;
+
+  // Clamp to prevent negative flow, allow boosted flow
+  return clamp(vec4(biasUp, biasDown, biasLeft, biasRight), 0.0, 2.5);
+}
+
 void main() {
   vec4 cell = texture(u_state, v_uv);
   float volume = cell.r;
@@ -109,30 +165,96 @@ void main() {
   float pressure = cell.b;
   float colorIdx = cell.a;
 
+  // Sample ALL 8 neighbors (cardinal + diagonal) for organic shapes
+  vec4 neighbors[8];
+  vec2 offsets[8];
+  offsets[0] = vec2(0.0, -1.0);   // up
+  offsets[1] = vec2(0.0, 1.0);    // down
+  offsets[2] = vec2(-1.0, 0.0);   // left
+  offsets[3] = vec2(1.0, 0.0);    // right
+  offsets[4] = vec2(-1.0, -1.0);  // up-left
+  offsets[5] = vec2(1.0, -1.0);   // up-right
+  offsets[6] = vec2(-1.0, 1.0);   // down-left
+  offsets[7] = vec2(1.0, 1.0);    // down-right
+
+  for (int i = 0; i < 8; i++) {
+    neighbors[i] = sampleCell(offsets[i]);
+  }
+
+  // Diagonal flow is slightly weaker (longer distance)
+  float flowStrength[8];
+  flowStrength[0] = 1.0; flowStrength[1] = 1.0;
+  flowStrength[2] = 1.0; flowStrength[3] = 1.0;
+  flowStrength[4] = 0.7; flowStrength[5] = 0.7;
+  flowStrength[6] = 0.7; flowStrength[7] = 0.7;
+
   // Source generates volume over time
   if (source > u_minVolume) {
     volume += source * u_sourceStrength * u_dt;
     source *= u_sourceDecay;
   }
 
-  // Skip empty cells
+  // Get terrain-based flow bias - creates river-like channels
+  vec2 worldPos = v_uv * u_resolution * 0.015;  // Larger features
+  float elevation = fbm(worldPos);
+
+  // Pre-calculate all neighbor elevations and find the LOWEST ones
+  float nElevations[8];
+  float minElev = 999.0;
+  float maxElev = -999.0;
+  for (int i = 0; i < 8; i++) {
+    vec2 nWorldPos = (v_uv + offsets[i] / u_resolution) * u_resolution * 0.015;
+    nElevations[i] = fbm(nWorldPos);
+    minElev = min(minElev, nElevations[i]);
+    maxElev = max(maxElev, nElevations[i]);
+  }
+  float elevRange = max(0.01, maxElev - minElev);
+
+  // CRITICAL: Empty cells must still receive inflow from neighbors
   if (volume < u_minVolume) {
-    fragColor = vec4(0.0);
+    float totalInflow = 0.0;
+    float dominantColor = 0.0;
+    float maxInflow = 0.0;
+
+    for (int i = 0; i < 8; i++) {
+      vec4 n = neighbors[i];
+      if (isEmpty(n)) continue;
+
+      // Flow downhill - neighbor flows to us if we're lower
+      // Use steep falloff - only the lowest 1-2 directions get significant flow
+      float elevDiff = nElevations[i] - elevation;
+      float normalizedElev = (nElevations[i] - minElev) / elevRange;
+      // Steep curve: low elevation = high flow, high elevation = nearly zero
+      float terrainBias = pow(1.0 - normalizedElev, 3.0) * 2.0 + 0.05;
+
+      float nVolume = n.r;
+      float nPressure = n.b;
+      float nPressureBoost = 1.0 + nPressure * (u_pressureMultiplier - 1.0);
+
+      if (nVolume > u_surfaceTension * 2.0) {
+        float inflow = nVolume * 0.15 * nPressureBoost * flowStrength[i] * terrainBias;
+        inflow = min(inflow, u_flowRate * u_dt * nPressureBoost);
+        totalInflow += inflow;
+        if (inflow > maxInflow) {
+          maxInflow = inflow;
+          dominantColor = n.a;
+        }
+      }
+    }
+
+    if (totalInflow > u_minVolume) {
+      fragColor = vec4(totalInflow, 0.0, 0.0, dominantColor);
+    } else {
+      fragColor = vec4(0.0);
+    }
     return;
   }
-
-  // Sample neighbors
-  vec4 neighbors[4];
-  neighbors[0] = sampleCell(vec2(0.0, -1.0));  // up
-  neighbors[1] = sampleCell(vec2(0.0, 1.0));   // down
-  neighbors[2] = sampleCell(vec2(-1.0, 0.0));  // left
-  neighbors[3] = sampleCell(vec2(1.0, 0.0));   // right
 
   // Count blocked and open neighbors
   int blockedCount = 0;
   int openCount = 0;
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 8; i++) {
     if (!isEmpty(neighbors[i]) && !colorsMatch(cell, neighbors[i])) {
       blockedCount++;
     } else {
@@ -142,41 +264,48 @@ void main() {
 
   // Update pressure
   if (blockedCount > 0) {
-    pressure = min(1.0, pressure + float(blockedCount) * 0.1 * u_dt);
+    pressure = min(1.0, pressure + float(blockedCount) * 0.05 * u_dt);
   } else {
     pressure *= 0.95;
   }
 
   // Calculate flow with pressure boost
   float pressureBoost = 1.0 + pressure * (u_pressureMultiplier - 1.0);
-  float flowPerNeighbor = u_flowRate * u_dt * pressureBoost / max(1.0, float(openCount));
+  float baseFlow = u_flowRate * u_dt * pressureBoost / max(1.0, float(openCount));
   float totalFlowOut = 0.0;
 
-  // Flow to each open neighbor
-  for (int i = 0; i < 4; i++) {
+  // Flow to each open neighbor - STRONGLY prefer lowest neighbors
+  for (int i = 0; i < 8; i++) {
     vec4 n = neighbors[i];
     if (!isEmpty(n) && !colorsMatch(cell, n)) continue;
 
+    // Steep terrain bias - flow almost exclusively to lowest neighbors
+    float normalizedElev = (nElevations[i] - minElev) / elevRange;
+    // Cubic falloff: lowest neighbor gets ~2x flow, highest gets ~0.05x
+    float terrainBias = pow(1.0 - normalizedElev, 3.0) * 2.0 + 0.05;
+
     float diff = volume - n.r;
     if (diff > u_surfaceTension) {
-      float toFlow = min(diff * 0.3 * pressureBoost, flowPerNeighbor);
+      float toFlow = diff * 0.3 * pressureBoost * flowStrength[i] * terrainBias;
+      toFlow = min(toFlow, baseFlow * flowStrength[i] * terrainBias);
       totalFlowOut += toFlow;
     }
   }
 
   // Apply outflow
-  totalFlowOut = min(totalFlowOut, volume - u_minVolume);
+  totalFlowOut = min(totalFlowOut, volume * 0.5);
   volume -= totalFlowOut;
 
-  // Receive inflow from neighbors
-  for (int i = 0; i < 4; i++) {
+  // Receive inflow from same-color neighbors
+  for (int i = 0; i < 8; i++) {
     vec4 n = neighbors[i];
     if (isEmpty(n) || !colorsMatch(cell, n)) continue;
 
     float diff = n.r - volume;
     if (diff > u_surfaceTension) {
       float nPressureBoost = 1.0 + n.b * (u_pressureMultiplier - 1.0);
-      float inflow = min(diff * 0.3 * nPressureBoost, u_flowRate * u_dt * nPressureBoost * 0.25);
+      float inflow = diff * 0.2 * nPressureBoost * flowStrength[i];
+      inflow = min(inflow, u_flowRate * u_dt * nPressureBoost);
       volume += inflow;
     }
   }
@@ -446,13 +575,28 @@ export const createFluidWebGL = (canvas) => {
 
         const idx = (ty * texSize + tx) * 4
 
-        // Add volume to existing
-        chunk.cpuData[idx] = Math.min(FLUID_PARAMS.maxVolume * 1.8, chunk.cpuData[idx] + volume)
-        chunk.cpuData[idx + 1] = Math.min(1.0, chunk.cpuData[idx + 1] + 0.5) // source
-        // Store color index directly (0-7 range, decoded in shader with int(a * 8.0 + 0.5))
-        if (chunk.cpuData[idx + 3] < 0.01 || Math.abs(chunk.cpuData[idx + 3] * 8 - colorIndex) < 0.5) {
+        // Add volume and ALWAYS set color (combat happens in shader)
+        const existingVolume = chunk.cpuData[idx]
+        const existingColor = Math.round(chunk.cpuData[idx + 3] * 8)
+        const newVolume = volume
+
+        if (existingVolume < 0.01 || existingColor === colorIndex) {
+          // Empty or same color - just add
+          chunk.cpuData[idx] = Math.min(FLUID_PARAMS.maxVolume * 1.8, existingVolume + newVolume)
           chunk.cpuData[idx + 3] = colorIndex / 8.0
+        } else {
+          // Different color - COMBAT! New ink fights existing
+          const newTotal = existingVolume + newVolume
+          if (newVolume > existingVolume * 0.5) {
+            // New ink is strong enough to take over
+            chunk.cpuData[idx] = newVolume - existingVolume * 0.3  // Lose some in combat
+            chunk.cpuData[idx + 3] = colorIndex / 8.0
+          } else {
+            // Existing ink wins but loses some volume
+            chunk.cpuData[idx] = existingVolume - newVolume * 0.5
+          }
         }
+        chunk.cpuData[idx + 1] = Math.min(1.0, chunk.cpuData[idx + 1] + 0.5) // source
       })
 
       // Upload entire texture back
@@ -510,12 +654,16 @@ export const createFluidWebGL = (canvas) => {
     flushPendingInk()
     time += dt
 
-    chunks.forEach(chunk => {
-      if (chunk.cellCount > 0 || chunk.dirty) {
-        simulateChunk(chunk)
-        chunk.dirty = false
-      }
-    })
+    // Run multiple simulation iterations per frame for faster spreading
+    const iterations = FLUID_PARAMS.iterations || 1
+    for (let i = 0; i < iterations; i++) {
+      chunks.forEach(chunk => {
+        if (chunk.cellCount > 0 || chunk.dirty) {
+          simulateChunk(chunk)
+          chunk.dirty = false
+        }
+      })
+    }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
