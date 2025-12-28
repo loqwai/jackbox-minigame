@@ -17,12 +17,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "DRAWING_ROOM", "class_name": "DrawingRoom" },
-      { "name": "Y_DRAWING_ROOM", "class_name": "YDrawingRoom" }
+      { "name": "Y_DRAWING_ROOM", "class_name": "YDrawingRoom" },
+      { "name": "ROOM_REGISTRY", "class_name": "RoomRegistry" }
     ]
   },
 
   "migrations": [
     { "tag": "v1", "new_classes": ["DrawingRoom"] },
-    { "tag": "v2", "new_classes": ["YDrawingRoom"] }
+    { "tag": "v2", "new_classes": ["YDrawingRoom"] },
+    { "tag": "v3", "new_classes": ["RoomRegistry"] }
   ]
 }
