@@ -2,9 +2,9 @@
 // Each chunk is a 256x256 cell region with its own GPU textures
 
 export const CHUNK_CONFIG = {
-  size: 256,              // Cells per chunk dimension
+  size: 512,              // Cells per chunk dimension (larger = fewer boundaries)
   cellSize: 8,            // World pixels per cell
-  maxActiveChunks: 200,   // Memory limit
+  maxActiveChunks: 100,   // Memory limit (fewer since chunks are bigger)
   unloadDelay: 5000,      // Ms before unloading empty chunk
   ghostCells: 1,          // Border cells for edge flow
 }

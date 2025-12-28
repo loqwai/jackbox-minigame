@@ -121,13 +121,16 @@ float noise(vec2 p) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Fractal brownian motion for multi-scale noise
+// Rotation matrix to break grid alignment
+mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);  // ~37 degree rotation
+
+// Fractal brownian motion for multi-scale noise with rotation
 float fbm(vec2 p) {
   float value = 0.0;
   float amplitude = 0.5;
   for (int i = 0; i < 4; i++) {
     value += amplitude * noise(p);
-    p *= 2.0;
+    p = rot * p * 2.0;  // Rotate AND scale each octave
     amplitude *= 0.5;
   }
   return value;
@@ -194,21 +197,19 @@ void main() {
     source *= u_sourceDecay;
   }
 
-  // Get terrain-based flow bias - creates river-like channels
-  vec2 worldPos = v_uv * u_resolution * 0.015;  // Larger features
-  float elevation = fbm(worldPos);
+  // Get terrain properties - impedance controls flow speed
+  vec2 worldPos = v_uv * 8.0;  // Scale for nice-sized features
 
-  // Pre-calculate all neighbor elevations and find the LOWEST ones
-  float nElevations[8];
-  float minElev = 999.0;
-  float maxElev = -999.0;
+  // Impedance: 0.3 = fast flow (slippery), 1.0 = normal, 2.0 = slow (sticky)
+  float impedance = 0.5 + fbm(worldPos) * 1.5;
+
+  // Pre-calculate neighbor impedances for flow calculations
+  float nImpedances[8];
+  float step = 8.0 / u_resolution.x;
   for (int i = 0; i < 8; i++) {
-    vec2 nWorldPos = (v_uv + offsets[i] / u_resolution) * u_resolution * 0.015;
-    nElevations[i] = fbm(nWorldPos);
-    minElev = min(minElev, nElevations[i]);
-    maxElev = max(maxElev, nElevations[i]);
+    vec2 nWorldPos = worldPos + offsets[i] * step;
+    nImpedances[i] = 0.5 + fbm(nWorldPos) * 1.5;
   }
-  float elevRange = max(0.01, maxElev - minElev);
 
   // CRITICAL: Empty cells must still receive inflow from neighbors
   if (volume < u_minVolume) {
@@ -220,20 +221,17 @@ void main() {
       vec4 n = neighbors[i];
       if (isEmpty(n)) continue;
 
-      // Flow downhill - neighbor flows to us if we're lower
-      // Use steep falloff - only the lowest 1-2 directions get significant flow
-      float elevDiff = nElevations[i] - elevation;
-      float normalizedElev = (nElevations[i] - minElev) / elevRange;
-      // Steep curve: low elevation = high flow, high elevation = nearly zero
-      float terrainBias = pow(1.0 - normalizedElev, 3.0) * 2.0 + 0.05;
-
       float nVolume = n.r;
       float nPressure = n.b;
       float nPressureBoost = 1.0 + nPressure * (u_pressureMultiplier - 1.0);
 
+      // Flow speed depends on BOTH cells' impedance (average)
+      float avgImpedance = (impedance + nImpedances[i]) * 0.5;
+      float flowSpeed = 1.0 / avgImpedance;  // Lower impedance = faster
+
       if (nVolume > u_surfaceTension * 2.0) {
-        float inflow = nVolume * 0.15 * nPressureBoost * flowStrength[i] * terrainBias;
-        inflow = min(inflow, u_flowRate * u_dt * nPressureBoost);
+        float inflow = nVolume * 0.15 * nPressureBoost * flowStrength[i] * flowSpeed;
+        inflow = min(inflow, u_flowRate * u_dt * nPressureBoost * flowSpeed);
         totalInflow += inflow;
         if (inflow > maxInflow) {
           maxInflow = inflow;
@@ -274,20 +272,19 @@ void main() {
   float baseFlow = u_flowRate * u_dt * pressureBoost / max(1.0, float(openCount));
   float totalFlowOut = 0.0;
 
-  // Flow to each open neighbor - STRONGLY prefer lowest neighbors
+  // Flow to each open neighbor - speed based on impedance
   for (int i = 0; i < 8; i++) {
     vec4 n = neighbors[i];
     if (!isEmpty(n) && !colorsMatch(cell, n)) continue;
 
-    // Steep terrain bias - flow almost exclusively to lowest neighbors
-    float normalizedElev = (nElevations[i] - minElev) / elevRange;
-    // Cubic falloff: lowest neighbor gets ~2x flow, highest gets ~0.05x
-    float terrainBias = pow(1.0 - normalizedElev, 3.0) * 2.0 + 0.05;
+    // Flow speed depends on impedance of both cells
+    float avgImpedance = (impedance + nImpedances[i]) * 0.5;
+    float flowSpeed = 1.0 / avgImpedance;
 
     float diff = volume - n.r;
     if (diff > u_surfaceTension) {
-      float toFlow = diff * 0.3 * pressureBoost * flowStrength[i] * terrainBias;
-      toFlow = min(toFlow, baseFlow * flowStrength[i] * terrainBias);
+      float toFlow = diff * 0.3 * pressureBoost * flowStrength[i] * flowSpeed;
+      toFlow = min(toFlow, baseFlow * flowStrength[i] * flowSpeed);
       totalFlowOut += toFlow;
     }
   }
@@ -648,6 +645,92 @@ export const createFluidWebGL = (canvas) => {
     const temp = chunk.textures.read
     chunk.textures.read = chunk.textures.write
     chunk.textures.write = temp
+  }
+
+  // Sync ghost cells between adjacent chunks (allows cross-chunk flow)
+  const syncGhostCells = () => {
+    const ghost = config.ghostCells
+    const size = config.size
+    const texSize = size + ghost * 2
+
+    chunks.forEach((chunk) => {
+      if (chunk.cellCount === 0 && !chunk.dirty) return
+
+      // Ensure CPU data exists
+      if (!chunk.cpuData) {
+        chunk.cpuData = new Float32Array(texSize * texSize * 4)
+      }
+
+      // Read current texture to CPU
+      gl.bindFramebuffer(gl.FRAMEBUFFER, chunk.textures.fbo)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chunk.textures.read, 0)
+      gl.readPixels(0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, chunk.cpuData)
+
+      // Copy edges to neighboring chunks' ghost cells
+      const neighbors = [
+        { dx: 0, dy: -1, key: `${chunk.cx},${chunk.cy - 1}` },  // top
+        { dx: 0, dy: 1, key: `${chunk.cx},${chunk.cy + 1}` },   // bottom
+        { dx: -1, dy: 0, key: `${chunk.cx - 1},${chunk.cy}` },  // left
+        { dx: 1, dy: 0, key: `${chunk.cx + 1},${chunk.cy}` },   // right
+      ]
+
+      neighbors.forEach(({ dx, dy, key }) => {
+        const neighbor = chunks.get(key)
+        if (!neighbor) return
+        if (!neighbor.cpuData) {
+          neighbor.cpuData = new Float32Array(texSize * texSize * 4)
+          gl.bindFramebuffer(gl.FRAMEBUFFER, neighbor.textures.fbo)
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, neighbor.textures.read, 0)
+          gl.readPixels(0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, neighbor.cpuData)
+        }
+
+        // Copy edge row/column from chunk to neighbor's ghost cells
+        if (dy === -1) {
+          // Copy our top edge (row ghost) to neighbor's bottom ghost (row texSize-1)
+          for (let x = 0; x < texSize; x++) {
+            const srcIdx = (ghost * texSize + x) * 4
+            const dstIdx = ((texSize - 1) * texSize + x) * 4
+            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
+          }
+          neighbor.needsUpload = true
+        } else if (dy === 1) {
+          // Copy our bottom edge to neighbor's top ghost
+          for (let x = 0; x < texSize; x++) {
+            const srcIdx = ((texSize - 1 - ghost) * texSize + x) * 4
+            const dstIdx = (0 * texSize + x) * 4
+            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
+          }
+          neighbor.needsUpload = true
+        } else if (dx === -1) {
+          // Copy our left edge to neighbor's right ghost
+          for (let y = 0; y < texSize; y++) {
+            const srcIdx = (y * texSize + ghost) * 4
+            const dstIdx = (y * texSize + texSize - 1) * 4
+            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
+          }
+          neighbor.needsUpload = true
+        } else if (dx === 1) {
+          // Copy our right edge to neighbor's left ghost
+          for (let y = 0; y < texSize; y++) {
+            const srcIdx = (y * texSize + texSize - 1 - ghost) * 4
+            const dstIdx = (y * texSize + 0) * 4
+            for (let c = 0; c < 4; c++) neighbor.cpuData[dstIdx + c] = chunk.cpuData[srcIdx + c]
+          }
+          neighbor.needsUpload = true
+        }
+      })
+    })
+
+    // Upload modified ghost cells back to GPU
+    chunks.forEach((chunk) => {
+      if (chunk.needsUpload && chunk.cpuData) {
+        gl.bindTexture(gl.TEXTURE_2D, chunk.textures.read)
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, texSize, texSize, gl.RGBA, gl.FLOAT, chunk.cpuData)
+        chunk.needsUpload = false
+      }
+    })
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
   const simulate = (dt) => {
