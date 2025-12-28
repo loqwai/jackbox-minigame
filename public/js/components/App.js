@@ -8,7 +8,7 @@ import { initPaintLevels, consumePaint, reloadPaint, refillColor, hasPaint } fro
 import { moveEnemy, spawnEnemy, checkPlayerCollision, respawnEnemyAwayFromPlayer } from '../game/enemies.js'
 import { checkPickupCollision, spawnPickup } from '../game/pickups.js'
 import { selectStrokesToBreak } from '../game/line-break.js'
-import { createSpreadSimulation, processEraserStroke, SPREAD_CONFIG } from '../game/ink-spread.js'
+import { createFluidWebGL } from '../gpu/webgl-fluid.js'
 import { renderCanvas } from '../render/canvas.js'
 import { getWorldCoordsFromEvent } from '../input/pointer.js'
 import { calculateWheelZoom, calculateButtonZoom, resetViewToOrigin } from '../input/wheel.js'
@@ -21,7 +21,7 @@ import { useCanvas } from '../hooks/use-canvas.js'
 import { useOnlineStatus } from '../hooks/use-online-status.js'
 import { useWebSocket } from '../hooks/use-websocket.js'
 import { useGameLoop } from '../hooks/use-game-loop.js'
-import { useStrokesSync, useEnemiesSync, usePickupsSync, useAwarenessSync, useTerritorySync, broadcastCursor, syncTerritory } from '../hooks/use-yjs-sync.js'
+import { useStrokesSync, useEnemiesSync, usePickupsSync, useAwarenessSync, broadcastCursor } from '../hooks/use-yjs-sync.js'
 
 import { Header } from './Header.js'
 import { Toolbar } from './Toolbar.js'
@@ -58,8 +58,8 @@ export const App = ({ roomId, peerId }) => {
   const [, setStrokesVersion] = useState(0)
   const enemies = useRef([])
   const pickups = useRef([])
-  const spreadSim = useRef(createSpreadSimulation())
-  const lastSpreadSync = useRef(0)
+  const fluidGPU = useRef(null)
+  const gpuCanvasRef = useRef(null)
   const processedStrokeCount = useRef(0)
 
   // Drawing refs
@@ -88,6 +88,50 @@ export const App = ({ roomId, peerId }) => {
   useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
   useEffect(() => { paintLevelsRef.current = paintLevels }, [paintLevels])
 
+  // Initialize WebGL fluid system (after canvas is sized)
+  useEffect(() => {
+    const gpu = gpuCanvasRef.current
+    const container = containerRef.current
+    if (!gpu || !container) return
+
+    const syncSize = () => {
+      const rect = container.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) return false
+      gpu.width = rect.width
+      gpu.height = rect.height
+      return true
+    }
+
+    const init = () => {
+      if (!syncSize()) {
+        requestAnimationFrame(init)
+        return
+      }
+
+      if (fluidGPU.current) return // Already initialized
+
+      try {
+        const fluid = createFluidWebGL(gpu)
+        fluidGPU.current = fluid
+
+        // Process any strokes that synced before fluid was ready
+        strokes.current.forEach(stroke => {
+          if (stroke?.points?.length >= 2 && stroke.color !== '#ffffff') {
+            fluid.addInkFromStroke(stroke)
+          }
+        })
+        processedStrokeCount.current = strokes.current.length
+        console.log('[WebGL] Initialized, processed', strokes.current.length, 'existing strokes')
+      } catch (err) {
+        console.error('[WebGL] Failed to initialize:', err)
+      }
+    }
+
+    requestAnimationFrame(init)
+    window.addEventListener('resize', syncSize)
+    return () => window.removeEventListener('resize', syncSize)
+  }, [])
+
   // Canvas setup
   const render = useCallback(() => {
     const ctx = ctxRef.current
@@ -106,7 +150,6 @@ export const App = ({ roomId, peerId }) => {
       playerPos: myCursor.current,
       isDrawing: isDrawing.current,
       remoteCursors,
-      spreadSim: spreadSim.current
     })
   }, [remoteCursors])
 
@@ -116,21 +159,14 @@ export const App = ({ roomId, peerId }) => {
   useStrokesSync(useCallback((s) => {
     strokes.current = s
 
-    // Handle stroke deletion - don't rebuild, just reset counter
-    // Territory persists independently of strokes now
     if (s.length < processedStrokeCount.current) {
       processedStrokeCount.current = s.length
     }
 
-    // Spawn particles for new strokes
     while (processedStrokeCount.current < s.length) {
       const stroke = s[processedStrokeCount.current]
-      if (stroke?.points?.length >= 2) {
-        if (stroke.color === '#ffffff') {
-          processEraserStroke(spreadSim.current, stroke)
-        } else {
-          spreadSim.current.spawnFromStroke(stroke, `stroke-${processedStrokeCount.current}`)
-        }
+      if (stroke?.points?.length >= 2 && stroke.color !== '#ffffff' && fluidGPU.current) {
+        fluidGPU.current.addInkFromStroke(stroke)
       }
       processedStrokeCount.current++
     }
@@ -139,12 +175,7 @@ export const App = ({ roomId, peerId }) => {
     render()
   }, [render]))
 
-  // Territory sync (receive from host)
-  useTerritorySync(useCallback((territoryData) => {
-    if (!isHost()) {
-      spreadSim.current.loadTerritory(territoryData)
-    }
-  }, []))
+  // Territory sync removed - GPU simulation is local-only for now
 
   useEnemiesSync(useCallback((e) => { enemies.current = e }, []))
   usePickupsSync(useCallback((p) => { pickups.current = p }, []))
@@ -207,23 +238,21 @@ export const App = ({ roomId, peerId }) => {
       }
     }
 
-    // Ink spreading simulation - everyone runs locally for smooth visuals
-    if (isSynced() && spreadSim.current) {
-      try {
-        spreadSim.current.update(deltaTime)
+    // WebGPU fluid simulation
+    if (fluidGPU.current) {
+      fluidGPU.current.simulate(deltaTime)
 
-        // Prune dead particles periodically
-        if (currentTime % 5000 < 20) {
-          spreadSim.current.prune()
-        }
-
-        // Host syncs authoritative territory state to other clients
-        if (isHost() && currentTime - lastSpreadSync.current > SPREAD_CONFIG.updateInterval * 10) {
-          lastSpreadSync.current = currentTime
-          syncTerritory(spreadSim.current.getTerritory())
-        }
-      } catch (e) {
-        console.error('Spread simulation error:', e)
+      // Render GPU fluid with proper view transformation
+      const canvas = canvasRef.current
+      if (canvas) {
+        const v = viewRef.current
+        fluidGPU.current.render({
+          x: -v.panX / v.zoom,
+          y: -v.panY / v.zoom,
+          scale: v.zoom,
+          width: canvas.width,
+          height: canvas.height,
+        })
       }
     }
 
@@ -486,12 +515,18 @@ export const App = ({ roomId, peerId }) => {
         <canvas
           id="infinite-canvas"
           ref=${canvasRef}
+          style=${{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }}
           onPointerDown=${handlePointerDown}
           onPointerMove=${handlePointerMove}
           onPointerUp=${handlePointerUp}
           onPointerCancel=${handlePointerUp}
           onPointerLeave=${handlePointerUp}
           onContextMenu=${(e) => e.preventDefault()}
+        />
+        <canvas
+          id="gpu-canvas"
+          ref=${gpuCanvasRef}
+          style=${{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 2 }}
         />
         <${Minimap}
           myPos=${myCursor.current}

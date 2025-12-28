@@ -5,7 +5,6 @@ import { drawPickups } from './pickups.js'
 import { drawPlayer } from './player.js'
 import { drawRemotePlayers } from './remote-players.js'
 import { getPeerColor } from '../state/peer-colors.js'
-import { drawAllTerritoryEffects } from './territory.js'
 
 // Renaissance-style graph paper background
 const drawGraphPaperBackground = (ctx, canvas, view) => {
@@ -136,7 +135,6 @@ export const renderCanvas = (ctx, canvas, options) => {
     playerPos,
     isDrawing,
     remoteCursors,
-    spreadSim
   } = options
 
   // Draw renaissance-style graph paper background
@@ -146,10 +144,7 @@ export const renderCanvas = (ctx, canvas, options) => {
   ctx.translate(view.panX, view.panY)
   ctx.scale(view.zoom, view.zoom)
 
-  // Draw territory (spreading ink) with combat effects
-  if (spreadSim) {
-    drawAllTerritoryEffects(ctx, spreadSim, view)
-  }
+  // Territory is rendered by WebGPU on separate canvas
 
   // Draw all strokes
   drawStrokes(ctx, strokes)

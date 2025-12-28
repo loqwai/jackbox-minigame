@@ -218,6 +218,11 @@ export const drawTerritoryBorders = (ctx, sim, view) => {
 
 // Main drawing function - combines all layers
 export const drawAllTerritoryEffects = (ctx, sim, view) => {
+  if (sim.isGPU) {
+    sim.render(view)
+    return
+  }
+
   drawTerritory(ctx, sim, view)
   drawParticles(ctx, sim, view)
   drawPaperTexture(ctx, sim, view)
